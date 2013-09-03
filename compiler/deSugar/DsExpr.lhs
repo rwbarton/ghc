@@ -308,7 +308,7 @@ dsExpr (HsSCC cc expr@(L loc _)) = do
     Tick (ProfNote (mkUserCC cc mod_name loc uniq) count True) <$> dsLExpr expr
 
 dsExpr (HsCoreAnn _ expr)
-  = dsLExpr expr
+  = Tick (Breakpoint 0 []) <$> dsLExpr expr
 
 dsExpr (HsCase discrim matches)
   = do { core_discrim <- dsLExpr discrim
