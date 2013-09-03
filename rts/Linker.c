@@ -1974,7 +1974,7 @@ mmapForLinker (size_t bytes, nat flags, int fd)
 {
    void *map_addr = NULL;
    void *result;
-   int pagesize, size;
+   size_t pagesize, size;
    static nat fixed = 0;
 
    IF_DEBUG(linker, debugBelch("mmapForLinker: start\n"));
