@@ -41,9 +41,11 @@
  * expected to return.
  */
 void barf(const char *s, ...)
+   GNUC3_ATTRIBUTE(format (PRINTF, 1, 2))
    GNUC3_ATTRIBUTE(__noreturn__);
 
 void vbarf(const char *s, va_list ap)
+   GNUC3_ATTRIBUTE(format (PRINTF, 1, 0))
    GNUC3_ATTRIBUTE(__noreturn__);
 
 // declared in Rts.h:
@@ -59,7 +61,8 @@ void vbarf(const char *s, va_list ap)
 void errorBelch(const char *s, ...)
    GNUC3_ATTRIBUTE(format (PRINTF, 1, 2));
 
-void verrorBelch(const char *s, va_list ap);
+void verrorBelch(const char *s, va_list ap)
+   GNUC3_ATTRIBUTE(format (PRINTF, 1, 0));
 
 /*
  * An error condition which is caused by and/or can be corrected by
@@ -73,7 +76,8 @@ void verrorBelch(const char *s, va_list ap);
 void sysErrorBelch(const char *s, ...)
    GNUC3_ATTRIBUTE(format (PRINTF, 1, 2));
 
-void vsysErrorBelch(const char *s, va_list ap);
+void vsysErrorBelch(const char *s, va_list ap)
+   GNUC3_ATTRIBUTE(format (PRINTF, 1, 0));
 
 /*
  * A debugging message.  Debugging messages are generated either as a
@@ -85,7 +89,8 @@ void vsysErrorBelch(const char *s, va_list ap);
 void debugBelch(const char *s, ...)
    GNUC3_ATTRIBUTE(format (PRINTF, 1, 2));
 
-void vdebugBelch(const char *s, va_list ap);
+void vdebugBelch(const char *s, va_list ap)
+   GNUC3_ATTRIBUTE(format (PRINTF, 1, 0));
 
 
 /* Hooks for redirecting message generation: */
