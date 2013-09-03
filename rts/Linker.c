@@ -2015,7 +2015,7 @@ mmap_again:
                fixed = MAP_FIXED;
                goto mmap_again;
 #else
-               barf("loadObj: failed to mmap() memory below 2Gb; asked for %lu bytes at %p.  Try specifying an address with +RTS -xm<addr> -RTS", size, map_addr, result);
+               barf("loadObj: failed to mmap() memory below 2Gb; asked for %lu bytes at %p.  Try specifying an address with +RTS -xm<addr> -RTS", size, map_addr);
 #endif
            } else {
                // hmm, we were given memory somewhere else, but it's
