@@ -522,7 +522,7 @@ threadStackOverflow (Capability *cap, StgTSO *tso)
         // squeezing happened or not.
 
         debugTrace(DEBUG_gc,
-                   "threadStackOverflow of TSO %ld (%p): stack too large (now %ld; max is %ld)",
+                   "threadStackOverflow of TSO %ld (%p): stack too large (now %ld; max is %d)",
                    (long)tso->id, tso, (long)tso->stackobj->stack_size,
                    RtsFlags.GcFlags.maxStkSize);
         IF_DEBUG(gc,
@@ -572,7 +572,7 @@ threadStackOverflow (Capability *cap, StgTSO *tso)
     }
 
     debugTraceCap(DEBUG_sched, cap,
-                  "allocating new stack chunk of size %d bytes",
+                  "allocating new stack chunk of size %" FMT_Word " bytes",
                   chunk_size * sizeof(W_));
 
     new_stack = (StgStack*) allocate(cap, chunk_size);

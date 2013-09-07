@@ -629,7 +629,7 @@ GarbageCollect (nat collect_gen,
 
   // Free the mark stack.
   if (mark_stack_top_bd != NULL) {
-      debugTrace(DEBUG_gc, "mark stack: %d blocks",
+      debugTrace(DEBUG_gc, "mark stack: %" FMT_Word " blocks",
                  countBlocks(mark_stack_top_bd));
       freeChain(mark_stack_top_bd);
   }
@@ -1297,7 +1297,7 @@ prepare_collected_gen (generation *gen)
             gen->bitmap = bitmap_bdescr;
             bitmap = bitmap_bdescr->start;
 
-            debugTrace(DEBUG_gc, "bitmap_size: %d, bitmap: %p",
+            debugTrace(DEBUG_gc, "bitmap_size: %" FMT_Word ", bitmap: %p",
                        bitmap_size, bitmap);
 
             // don't forget to fill it with zeros!
@@ -1640,7 +1640,7 @@ resize_nursery (void)
 
 	    adjusted_blocks = (RtsFlags.GcFlags.maxHeapSize - 2 * blocks);
 
-	    debugTrace(DEBUG_gc, "near maximum heap size of 0x%x blocks, blocks = %d, adjusted to %ld",
+	    debugTrace(DEBUG_gc, "near maximum heap size of 0x%x blocks, blocks = %" FMT_Word ", adjusted to %ld",
 		       RtsFlags.GcFlags.maxHeapSize, blocks, adjusted_blocks);
 
 	    pc_free = adjusted_blocks * 100 / RtsFlags.GcFlags.maxHeapSize;

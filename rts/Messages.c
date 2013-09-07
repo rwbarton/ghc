@@ -166,7 +166,7 @@ nat messageBlackHole(Capability *cap, MessageBlackHole *msg)
     StgClosure *bh = UNTAG_CLOSURE(msg->bh);
     StgTSO *owner;
 
-    debugTraceCap(DEBUG_sched, cap, "message: thread %d blocking on blackhole %p", 
+    debugTraceCap(DEBUG_sched, cap, "message: thread %" FMT_Word " blocking on blackhole %p",
                   (W_)msg->tso->id, msg->bh);
 
     info = bh->header.info;
@@ -254,7 +254,7 @@ loop:
         ((StgInd*)bh)->indirectee = (StgClosure *)bq;
         recordClosureMutated(cap,bh); // bh was mutated
 
-        debugTraceCap(DEBUG_sched, cap, "thread %d blocked on thread %d", 
+        debugTraceCap(DEBUG_sched, cap, "thread %" FMT_Word " blocked on thread %" FMT_Word,
                       (W_)msg->tso->id, (W_)owner->id);
 
         return 1; // blocked
@@ -287,7 +287,7 @@ loop:
             recordClosureMutated(cap,(StgClosure*)bq);
         }
 
-        debugTraceCap(DEBUG_sched, cap, "thread %d blocked on thread %d", 
+        debugTraceCap(DEBUG_sched, cap, "thread %" FMT_Word " blocked on thread %" FMT_Word,
                       (W_)msg->tso->id, (W_)owner->id);
 
         // See above, #3838

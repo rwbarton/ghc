@@ -554,14 +554,14 @@ resizeNursery (nursery *nursery, W_ blocks)
   if (nursery_blocks == blocks) return;
 
   if (nursery_blocks < blocks) {
-      debugTrace(DEBUG_gc, "increasing size of nursery to %d blocks", 
+      debugTrace(DEBUG_gc, "increasing size of nursery to %" FMT_Word " blocks",
                  blocks);
     nursery->blocks = allocNursery(nursery->blocks, blocks-nursery_blocks);
   } 
   else {
     bdescr *next_bd;
     
-    debugTrace(DEBUG_gc, "decreasing size of nursery to %d blocks", 
+    debugTrace(DEBUG_gc, "decreasing size of nursery to %" FMT_Word " blocks",
                blocks);
 
     bd = nursery->blocks;
