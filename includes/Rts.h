@@ -70,6 +70,16 @@ extern "C" {
 #define RTS_UNLIKELY(p) p
 #endif
 
+/* "printf" function name for GCC format attribute */
+#if defined(mingw32_HOST_OS)
+/* On Win64, if we say "printf" then gcc thinks we are going to use
+   MS format specifiers like %I64d rather than %llu */
+#define PRINTF gnu_printf
+#else
+/* However, on OS X, "gnu_printf" isn't recognised */
+#define PRINTF printf
+#endif
+
 /* Fix for mingw stat problem (done here so it's early enough) */
 #ifdef mingw32_HOST_OS
 #define __MSVCRT__ 1
