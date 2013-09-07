@@ -81,7 +81,8 @@ extern int TRACE_spark_full;
 // -----------------------------------------------------------------------------
 
 #ifdef DEBUG
-void traceBegin (const char *str, ...);
+void traceBegin (const char *str, ...)
+    GNUC3_ATTRIBUTE(format (PRINTF, 1, 2));
 void traceEnd (void);
 #endif
 
@@ -179,7 +180,8 @@ void traceSparkEvent_ (Capability *cap, EventTypeNum tag, StgWord info1);
         traceCap_(cap, msg, ##__VA_ARGS__);     \
     }
 
-void traceCap_(Capability *cap, char *msg, ...);
+void traceCap_(Capability *cap, char *msg, ...)
+    GNUC3_ATTRIBUTE(format (PRINTF, 2, 3));
 
 /* 
  * Emit a trace message
@@ -189,7 +191,8 @@ void traceCap_(Capability *cap, char *msg, ...);
         trace_(msg, ##__VA_ARGS__);             \
     }
 
-void trace_(char *msg, ...);
+void trace_(char *msg, ...)
+    GNUC3_ATTRIBUTE(format (PRINTF, 1, 2));
 
 /* 
  * A message or event emitted by the program
