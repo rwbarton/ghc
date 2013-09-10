@@ -394,18 +394,8 @@ genCCall
 genCCall (PrimTarget MO_WriteBarrier) _ _
  = do   return nilOL
 
-genCCall target dest_regs args0
+genCCall target dest_regs args
  = do
-        -- need to remove alignment information
-        let args | PrimTarget mop <- target,
-                            (mop == MO_Memcpy ||
-                             mop == MO_Memset ||
-                             mop == MO_Memmove)
-                          = init args0
-
-                          | otherwise
-                          = args0
-
         -- work out the arguments, and assign them to integer regs
         argcode_and_vregs       <- mapM arg_to_int_vregs args
         let (argcodes, vregss)  = unzip argcode_and_vregs
@@ -643,9 +633,9 @@ outOfLineMachOp_table mop
 
         MO_UF_Conv w -> fsLit $ word2FloatLabel w
 
-        MO_Memcpy    -> fsLit "memcpy"
-        MO_Memset    -> fsLit "memset"
-        MO_Memmove   -> fsLit "memmove"
+        MO_Memcpy _   -> fsLit "memcpy"
+        MO_Memset _   -> fsLit "memset"
+        MO_Memmove _  -> fsLit "memmove"
 
         MO_BSwap w   -> fsLit $ bSwapLabel w
         MO_PopCnt w  -> fsLit $ popCntLabel w

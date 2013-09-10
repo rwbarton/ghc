@@ -1325,8 +1325,7 @@ doCopyByteArrayOp = emitCopyByteArray copy
     -- Copy data (we assume the arrays aren't overlapping since
     -- they're of different types)
     copy _src _dst dst_p src_p bytes =
-        do dflags <- getDynFlags
-           emitMemcpyCall dst_p src_p bytes (mkIntExpr dflags 1)
+        emitMemcpyCall dst_p src_p bytes 1
 
 -- | Takes a source 'MutableByteArray#', an offset in the source
 -- array, a destination 'MutableByteArray#', an offset into the
@@ -1343,8 +1342,8 @@ doCopyMutableByteArrayOp = emitCopyByteArray copy
     copy src dst dst_p src_p bytes = do
         dflags <- getDynFlags
         [moveCall, cpyCall] <- forkAlts [
-            getCode $ emitMemmoveCall dst_p src_p bytes (mkIntExpr dflags 1),
-            getCode $ emitMemcpyCall  dst_p src_p bytes (mkIntExpr dflags 1)
+            getCode $ emitMemmoveCall dst_p src_p bytes 1,
+            getCode $ emitMemcpyCall  dst_p src_p bytes 1
             ]
         emit =<< mkCmmIfThenElse (cmmEqWord dflags src dst) moveCall cpyCall
 
@@ -1369,7 +1368,7 @@ doSetByteArrayOp :: CmmExpr -> CmmExpr -> CmmExpr -> CmmExpr
 doSetByteArrayOp ba off len c
     = do dflags <- getDynFlags
          p <- assignTempE $ cmmOffsetExpr dflags (cmmOffsetB dflags ba (arrWordsHdrSize dflags)) off
-         emitMemsetCall p c len (mkIntExpr dflags 1)
+         emitMemsetCall p c len 1
 
 -- ----------------------------------------------------------------------------
 -- Copying pointer arrays
@@ -1400,7 +1399,7 @@ doCopyArrayOp = emitCopyArray copy
     -- they're of different types)
     copy _src _dst dst_p src_p bytes =
         do dflags <- getDynFlags
-           emitMemcpyCall dst_p src_p bytes (mkIntExpr dflags (wORD_SIZE dflags))
+           emitMemcpyCall dst_p src_p bytes (wORD_SIZE dflags)
 
 
 -- | Takes a source 'MutableArray#', an offset in the source array, a
@@ -1417,8 +1416,8 @@ doCopyMutableArrayOp = emitCopyArray copy
     copy src dst dst_p src_p bytes = do
         dflags <- getDynFlags
         [moveCall, cpyCall] <- forkAlts [
-            getCode $ emitMemmoveCall dst_p src_p bytes (mkIntExpr dflags (wORD_SIZE dflags)),
-            getCode $ emitMemcpyCall  dst_p src_p bytes (mkIntExpr dflags (wORD_SIZE dflags))
+            getCode $ emitMemmoveCall dst_p src_p bytes (wORD_SIZE dflags),
+            getCode $ emitMemcpyCall  dst_p src_p bytes (wORD_SIZE dflags)
             ]
         emit =<< mkCmmIfThenElse (cmmEqWord dflags src dst) moveCall cpyCall
 
@@ -1489,12 +1488,12 @@ emitCloneArray info_p res_r src0 src_off0 n0 = do
     src_p <- assignTempE $ cmmOffsetExprW dflags (cmmOffsetB dflags src (arrPtrsHdrSize dflags))
              src_off
 
-    emitMemcpyCall dst_p src_p (cmmMulWord dflags n (wordSize dflags)) (mkIntExpr dflags (wORD_SIZE dflags))
+    emitMemcpyCall dst_p src_p (cmmMulWord dflags n (wordSize dflags)) (wORD_SIZE dflags)
 
     emitMemsetCall (cmmOffsetExprW dflags dst_p n)
         (mkIntExpr dflags 1)
         card_bytes
-        (mkIntExpr dflags (wORD_SIZE dflags))
+        (wORD_SIZE dflags)
     emit $ mkAssign (CmmLocal res_r) arr
 
 -- | Takes and offset in the destination array, the base address of
@@ -1509,7 +1508,7 @@ emitSetCards dst_start dst_cards_start n = do
     emitMemsetCall (cmmAddWord dflags dst_cards_start start_card)
         (mkIntExpr dflags 1)
         (cmmAddWord dflags (cmmSubWord dflags end_card start_card) (mkIntExpr dflags 1))
-        (mkIntExpr dflags 1) -- no alignment (1 byte)
+        1 -- no alignment (1 byte)
 
 -- Convert an element index to a card index
 card :: DynFlags -> CmmExpr -> CmmExpr
@@ -1527,29 +1526,29 @@ wordSize :: DynFlags -> CmmExpr
 wordSize dflags = mkIntExpr dflags (wORD_SIZE dflags)
 
 -- | Emit a call to @memcpy@.
-emitMemcpyCall :: CmmExpr -> CmmExpr -> CmmExpr -> CmmExpr -> FCode ()
+emitMemcpyCall :: CmmExpr -> CmmExpr -> CmmExpr -> Int -> FCode ()
 emitMemcpyCall dst src n align = do
     emitPrimCall
         [ {-no results-} ]
-        MO_Memcpy
-        [ dst, src, n, align ]
+        (MO_Memcpy align)
+        [ dst, src, n ]
 
 -- | Emit a call to @memmove@.
-emitMemmoveCall :: CmmExpr -> CmmExpr -> CmmExpr -> CmmExpr -> FCode ()
+emitMemmoveCall :: CmmExpr -> CmmExpr -> CmmExpr -> Int -> FCode ()
 emitMemmoveCall dst src n align = do
     emitPrimCall
         [ {- no results -} ]
-        MO_Memmove
-        [ dst, src, n, align ]
+        (MO_Memmove align)
+        [ dst, src, n ]
 
 -- | Emit a call to @memset@.  The second argument must fit inside an
 -- unsigned char.
-emitMemsetCall :: CmmExpr -> CmmExpr -> CmmExpr -> CmmExpr -> FCode ()
+emitMemsetCall :: CmmExpr -> CmmExpr -> CmmExpr -> Int -> FCode ()
 emitMemsetCall dst c n align = do
     emitPrimCall
         [ {- no results -} ]
-        MO_Memset
-        [ dst, c, n, align ]
+        (MO_Memset align)
+        [ dst, c, n ]
 
 -- | Emit a call to @allocate@.
 emitAllocateCall :: LocalReg -> CmmExpr -> CmmExpr -> FCode ()

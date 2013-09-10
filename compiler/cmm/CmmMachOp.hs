@@ -18,6 +18,7 @@ module CmmMachOp
     -- CallishMachOp
     , CallishMachOp(..), callishMachOpHints
     , pprCallishMachOp
+    , machOpMemcpyishAlign
    )
 where
 
@@ -521,12 +522,12 @@ data CallishMachOp
   | MO_Prefetch_Data -- Prefetch hint. May change program performance but not
                      -- program behavior.
 
-  -- Note that these three MachOps all take 1 extra parameter than the
-  -- standard C lib versions. The extra (last) parameter contains
-  -- alignment of the pointers. Used for optimisation in backends.
-  | MO_Memcpy
-  | MO_Memset
-  | MO_Memmove
+  -- These three MachOps are parameterised by the known alignment
+  -- of the destination and source (for memcpy/memmove) pointers.
+  -- This information may be used for optimisation in backends.
+  | MO_Memcpy Int
+  | MO_Memset Int
+  | MO_Memmove Int
 
   | MO_PopCnt Width
   | MO_BSwap Width
@@ -537,8 +538,15 @@ pprCallishMachOp mo = text (show mo)
 
 callishMachOpHints :: CallishMachOp -> ([ForeignHint], [ForeignHint])
 callishMachOpHints op = case op of
-  MO_Memcpy  -> ([], [AddrHint,AddrHint,NoHint,NoHint])
-  MO_Memset  -> ([], [AddrHint,NoHint,NoHint,NoHint])
-  MO_Memmove -> ([], [AddrHint,AddrHint,NoHint,NoHint])
-  _          -> ([],[])
+  MO_Memcpy _  -> ([], [AddrHint,AddrHint,NoHint])
+  MO_Memset _  -> ([], [AddrHint,NoHint,NoHint])
+  MO_Memmove _ -> ([], [AddrHint,AddrHint,NoHint])
+  _            -> ([],[])
   -- empty lists indicate NoHint
+
+machOpMemcpyishAlign :: CallishMachOp -> Maybe Int
+machOpMemcpyishAlign op = case op of
+  MO_Memcpy  align -> Just align
+  MO_Memset  align -> Just align
+  MO_Memmove align -> Just align
+  _                -> Nothing
