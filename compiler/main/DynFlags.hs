@@ -310,6 +310,7 @@ data GeneralFlag
    | Opt_FunToThunk               -- allow WwLib.mkWorkerArgs to remove all value lambdas
    | Opt_DictsStrict                     -- be strict in argument dictionaries
    | Opt_DmdTxDictSel              -- use a special demand transformer for dictionary selectors
+   | Opt_MemChecksUnlikely
 
    -- Interface files
    | Opt_IgnoreInterfacePragmas
@@ -2604,7 +2605,8 @@ fFlags = [
   ( "kill-absence",                     Opt_KillAbsence, nop),
   ( "kill-one-shot",                    Opt_KillOneShot, nop),
   ( "dicts-strict",                     Opt_DictsStrict, nop ),
-  ( "dmd-tx-dict-sel",                  Opt_DmdTxDictSel, nop )
+  ( "dmd-tx-dict-sel",                  Opt_DmdTxDictSel, nop ),
+  ( "mem-checks-unlikely",              Opt_MemChecksUnlikely, nop )
   ]
 
 -- | These @-f\<blah\>@ flags can all be reversed with @-fno-\<blah\>@

@@ -547,17 +547,26 @@ do_checks mb_stk_hwm checkYield mb_alloc_lit do_gc = do
 
     bump_hp   = cmmOffsetExprB dflags (CmmReg hpReg) alloc_lit
 
+    unlikely cmm =
+      if gopt Opt_MemChecksUnlikely dflags
+      then
+        CmmMachOp (mo_wordNe dflags)
+        [CmmMachOp (MO_Unlikely (wordWidth dflags)) [cmm],
+         CmmLit (CmmInt 0 (wordWidth dflags))]
+      else cmm
+
     -- Sp overflow if (Sp - CmmHighStack < SpLim)
-    sp_oflo sp_hwm =
-         CmmMachOp (mo_wordULt dflags)
-                  [CmmMachOp (MO_Sub (typeWidth (cmmRegType dflags spReg)))
-                             [CmmReg spReg, sp_hwm],
-                   CmmReg spLimReg]
+    sp_oflo sp_hwm = unlikely $
+        CmmMachOp (mo_wordULt dflags)
+        [CmmMachOp (MO_Sub (typeWidth (cmmRegType dflags spReg)))
+         [CmmReg spReg, sp_hwm],
+         CmmReg spLimReg]
 
     -- Hp overflow if (Hp > HpLim)
     -- (Hp has been incremented by now)
     -- HpLim points to the LAST WORD of valid allocation space.
-    hp_oflo = CmmMachOp (mo_wordUGt dflags)
+    hp_oflo = unlikely $ 
+              CmmMachOp (mo_wordUGt dflags)
                   [CmmReg hpReg, CmmReg (CmmGlobal HpLim)]
 
     alloc_n = mkAssign (CmmGlobal HpAlloc) alloc_lit

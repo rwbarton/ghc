@@ -324,7 +324,7 @@ genCall target res args = do
     let retTy = ret_type ress_hints
     let argTy = tysToParams $ map arg_type args_hints
     let funTy = \name -> LMFunction $ LlvmFunctionDecl name ExternallyVisible
-                             lmconv retTy FixedArgs argTy (llvmFunAlign dflags)
+                             lmconv retTy FixedArgs argTy (llvmFunAlign dflags name)
 
 
     (argVars, stmts1, top1) <- arg_vars args_hints ([], nilOL, [])
@@ -917,6 +917,13 @@ genMachOp _ op [x] = case op of
             all0s = LMLitVar $ LMVectorLit (replicate len all0)
         in negateVec vecty all0s LM_MO_FSub
 
+    MO_Unlikely w -> do
+        let ty = widthToLlvmInt w
+        (vx, stmts, top) <- exprToVar x
+        (ev, stmts2, top2) <- getInstrinct (fsLit "llvm.expect.i64") ty [ty, ty] -- fix
+        (rv, stmt3) <- doExpr ty $ Call StdCall ev [vx, mkIntLit ty 0] llvmStdFunAttrs -- ????
+        return (rv, stmts `appOL` stmts2 `snocOL` stmt3, top ++ top2)
+
     -- Handle unsupported cases explicitly so we get a warning
     -- of missing case when new MachOps added
     MO_Add _          -> panicOp
@@ -1165,6 +1172,8 @@ genMachOp_slow opt op [x, y] = case op of
     MO_VF_Extract {} -> panicOp
 
     MO_VF_Neg {} -> panicOp
+
+    MO_Unlikely _  -> panicOp
 
     where
         binLlvmOp ty binOp = do
