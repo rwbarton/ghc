@@ -128,6 +128,9 @@ data MachOp
   | MO_VF_Neg  Length Width             -- unary -
   | MO_VF_Mul  Length Width
   | MO_VF_Quot Length Width
+
+  -- Branch prediction
+  | MO_Unlikely Width           -- like __builtin_expect(x, 0)
   deriving (Eq, Show)
 
 pprMachOp :: MachOp -> SDoc
@@ -383,6 +386,8 @@ machOpResultType dflags mop tys =
     MO_VF_Mul  l w      -> cmmVec l (cmmFloat w)
     MO_VF_Quot l w      -> cmmVec l (cmmFloat w)
     MO_VF_Neg  l w      -> cmmVec l (cmmFloat w)
+
+    MO_Unlikely r       -> cmmBits r
   where
     (ty1:_) = tys
 
@@ -469,6 +474,8 @@ machOpArgReps dflags op =
     MO_VF_Mul  _ r      -> [r,r]
     MO_VF_Quot _ r      -> [r,r]
     MO_VF_Neg  _ r      -> [r]
+
+    MO_Unlikely r       -> [r]
 
 -----------------------------------------------------------------------------
 -- CallishMachOp

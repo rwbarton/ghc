@@ -59,6 +59,8 @@ cmmMachOpFoldM _ op [CmmLit (CmmInt x rep)]
       MO_SS_Conv  from to -> CmmLit (CmmInt (narrowS from x) to)
       MO_UU_Conv  from to -> CmmLit (CmmInt (narrowU from x) to)
 
+      MO_Unlikely _ -> CmmLit (CmmInt x rep)
+
       _ -> panic "cmmMachOpFoldM: unknown unary op"
 
 
