@@ -673,9 +673,9 @@ foreignExportInitialiser hs_fn =
    -- the program.
    -- (this is bad for big umbrella modules like Graphics.Rendering.OpenGL)
    vcat
-    [ text "static void stginit_export_" <> ppr hs_fn
+    [ text "void stginit_export_" <> ppr hs_fn
          <> text "() __attribute__((constructor));"
-    , text "static void stginit_export_" <> ppr hs_fn <> text "()"
+    , text "void stginit_export_" <> ppr hs_fn <> text "()"
     , braces (text "foreignExportStablePtr"
        <> parens (text "(StgPtr) &" <> ppr hs_fn <> text "_closure")
        <> semi)
