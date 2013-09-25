@@ -28,7 +28,7 @@
    hackery can go away sometime.
    ------------------------------------------------------------------------- */
 
-#if x86_64_TARGET_ARCH
+#if x86_64_TARGET_ARCH && !defined(__ILP32__)
 #define OFFSET_FIELD(n) StgHalfInt n; StgHalfWord __pad_##n
 #else   
 #define OFFSET_FIELD(n) StgInt n

@@ -104,6 +104,7 @@ data ArmABI
     deriving (Read, Show, Eq)
 
 target32Bit :: Platform -> Bool
+target32Bit Platform { platformArch = ArchX86_64 } = False
 target32Bit p = platformWordSize p == 4
 
 -- | This predicates tells us whether the OS supports ELF-like shared libraries.

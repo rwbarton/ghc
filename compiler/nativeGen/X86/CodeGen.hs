@@ -539,6 +539,7 @@ getRegister' _ is32Bit (CmmMachOp (MO_SS_Conv W32 W64) [CmmLoad addr _])
   code <- intLoadCode (MOVSxL II32) addr
   return (Any II64 code)
 
+-- XXX need to handle PIC on x32
 getRegister' _ is32Bit (CmmMachOp (MO_Add W64) [CmmReg (CmmGlobal PicBaseReg),
                                      CmmLit displacement])
  | not is32Bit = do
@@ -1479,9 +1480,13 @@ assignReg_FltCode _ reg src = do
 
 genJump :: CmmExpr{-the branch target-} -> [Reg] -> NatM InstrBlock
 
+-- XXX this is bad because the CmmLoad is probably 32 bits,
+-- but we ignore the width and implicitly jump to a 64-bit address(?)
+{-
 genJump (CmmLoad mem _) regs = do
   Amode target code <- getAmode mem
   return (code `snocOL` JMP (OpAddr target) regs)
+-}
 
 genJump (CmmLit lit) regs = do
   return (unitOL (JMP (OpImm (litToImm lit)) regs))
@@ -2371,7 +2376,7 @@ outOfLineCmmOp mop res args
 genSwitch :: DynFlags -> CmmExpr -> [Maybe BlockId] -> NatM InstrBlock
 
 genSwitch dflags expr ids
-  | gopt Opt_PIC dflags
+  | gopt Opt_PIC dflags         -- XXX will probably need to fix this too
   = do
         (reg,e_code) <- getSomeReg expr
         lbl <- getNewLabelNat
@@ -2419,7 +2424,8 @@ genSwitch dflags expr ids
         lbl <- getNewLabelNat
         let op = OpAddr (AddrBaseIndex EABaseNone (EAIndex reg (wORD_SIZE dflags)) (ImmCLbl lbl))
             code = e_code `appOL` toOL [
-                    JMP_TBL op ids ReadOnlyData lbl
+                    MOV II32 op (OpReg reg),
+                    JMP_TBL (OpReg reg) ids ReadOnlyData lbl
                  ]
         return code
 
