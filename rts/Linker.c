@@ -4304,7 +4304,9 @@ ocRunInit_PEi386 ( ObjectCode *oc )
 #  define ELF_TARGET_386    /* Used inside <elf.h> */
 #elif defined(x86_64_HOST_ARCH)
 #  define ELF_TARGET_X64_64
+#if !defined(__ILP32__)
 #  define ELF_64BIT
+#endif
 #  define ELF_TARGET_AMD64 /* Used inside <elf.h> on Solaris 11 */
 #elif defined(powerpc64_HOST_ARCH)
 #  define ELF_64BIT
@@ -5440,8 +5442,8 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 #if defined(ALWAYS_PIC)
           barf("R_X86_64_PC32 relocation, but ALWAYS_PIC.");
 #else
-          StgInt64 off = value - P;
-          if (off >= 0x7fffffffL || off < -0x80000000L) {
+          StgInt64 off = (StgInt64)value - (StgInt64)P;
+          if (off >= 0x7fffffffLL || off < -0x80000000LL) {
 #if X86_64_ELF_NONPIC_HACK
               StgInt64 pltAddress = (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
                                                 -> jumpIsland;
