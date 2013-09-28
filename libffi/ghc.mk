@@ -94,7 +94,7 @@ $(libffi_STAMP_CONFIGURE): $(TOUCH_DEP)
 	          --libdir=$(TOP)/libffi/build/inst/lib \
 	          --enable-static=yes \
 	          --enable-shared=$(libffi_EnableShared) \
-	          --host=$(TargetPlatformFull)
+	          --host=$(TargetPlatformFull)-gnux32
 
 	# wc on OS X has spaces in its output, which libffi's Makefile
 	# doesn't expect, so we tweak it to sed them out
@@ -112,6 +112,7 @@ $(libffi_STAMP_INSTALL): $(libffi_STAMP_BUILD) $(TOUCH_DEP)
 	"$(TOUCH_CMD)" $@
 
 $(libffi_STATIC_LIB): $(libffi_STAMP_INSTALL)
+	(cd libffi/build/inst/lib && ln -sf ../libx32/* .)
 	@test -f $@ || { echo "$< exists, but $@ does not."; echo "Suggest removing $<."; exit 1; }
 
 $(libffi_HEADERS): $(libffi_STAMP_INSTALL) | $$(dir $$@)/.
