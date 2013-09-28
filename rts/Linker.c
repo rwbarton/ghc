@@ -5469,7 +5469,7 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 #if defined(ALWAYS_PIC)
           barf("R_X86_64_32 relocation, but ALWAYS_PIC.");
 #else
-          if (value >= 0x7fffffffL) {
+          if (value >= 0x7fffffffLL) {
 #if X86_64_ELF_NONPIC_HACK
               StgInt64 pltAddress = (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
                                                 -> jumpIsland;
@@ -5487,7 +5487,7 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 #if defined(ALWAYS_PIC)
           barf("R_X86_64_32S relocation, but ALWAYS_PIC.");
 #else
-          if ((StgInt64)value > 0x7fffffffL || (StgInt64)value < -0x80000000L) {
+          if ((StgInt64)value > 0x7fffffffLL || (StgInt64)value < -0x80000000LL) {
 #if X86_64_ELF_NONPIC_HACK
               StgInt64 pltAddress = (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
                                                 -> jumpIsland;
@@ -5536,7 +5536,7 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           barf("R_X86_64_PLT32 relocation, but ALWAYS_PIC.");
 #else
           StgInt64 off = value - P;
-          if (off >= 0x7fffffffL || off < -0x80000000L) {
+          if (off >= 0x7fffffffLL || off < -0x80000000LL) {
               StgInt64 pltAddress = (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
                                                     -> jumpIsland;
               off = pltAddress + A - P;
