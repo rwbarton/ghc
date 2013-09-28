@@ -357,7 +357,7 @@ pprAddr (AddrBaseIndex base index displacement)
     let
         pp_disp  = ppr_disp displacement
         pp_off p = pp_disp <> char '(' <> p <> char ')'
-        pp_reg r = pprReg (archWordSize (target32Bit platform)) r
+        pp_reg r = pprReg (platformPtrSize platform) r -- XXX this probably isn't okay for LEA!! at least can't use for 64 bit arithmetic
     in
     case (base, index) of
       (EABaseNone,  EAIndexNone) -> pp_disp

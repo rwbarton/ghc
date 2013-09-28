@@ -12,7 +12,7 @@
 module X86.Instr (Instr(..), Operand(..), JumpDest,
                   getJumpDestBlockId, canShortcut, shortcutStatics,
                   shortcutJump, i386_insert_ffrees, allocMoreStack,
-                  maxSpillSlots, archWordSize)
+                  maxSpillSlots, archWordSize, platformPtrSize)
 where
 
 import X86.Cond
@@ -47,6 +47,11 @@ archWordSize :: Bool -> Size
 archWordSize is32Bit
  | is32Bit   = II32
  | otherwise = II64
+
+platformPtrSize :: Platform -> Size
+platformPtrSize p
+ | platformWordSize p == 4 = II32
+ | otherwise               = II64
 
 -- | Instruction instance for x86 instruction set.
 instance Instruction Instr where
