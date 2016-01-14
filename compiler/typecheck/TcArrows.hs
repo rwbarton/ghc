@@ -169,8 +169,11 @@ tc_cmd env (HsCmdIf (Just fun) pred b1 b2) res_ty -- Rebindable syntax for if
         ; let if_ty = mkFunTys [pred_ty, r_ty, r_ty] r_ty
         ; checkTc (not (r_tv `elemVarSet` tyCoVarsOfType pred_ty))
                   (ptext (sLit "Predicate type of `ifThenElse' depends on result type"))
-        ; fun'  <- tcSyntaxOp IfOrigin fun if_ty
-        ; pred' <- tcMonoExpr pred pred_ty
+        ; (pred', fun')
+            <- tcSyntaxOp IfOrigin fun (map SynType [pred_ty, r_ty, r_ty])
+                                       (mkCheckExpType r_ty) $ \ _ ->
+               tcMonoExpr pred pred_ty
+
         ; b1'   <- tcCmd env b1 res_ty
         ; b2'   <- tcCmd env b2 res_ty
         ; return (HsCmdIf (Just fun') pred' b1' b2')
@@ -366,7 +369,7 @@ tcArrDoStmt env ctxt (RecStmt { recS_stmts = stmts, recS_later_ids = later_names
         { (stmts', tup_rets)
                 <- tcStmtsAndThen ctxt (tcArrDoStmt env) stmts res_ty   $ \ _res_ty' ->
                         -- ToDo: res_ty not really right
-                   zipWithM tcCheckId tup_names tup_elt_tys
+                   zipWithM tcCheckId tup_names (map mkCheckExpType tup_elt_tys)
 
         ; thing <- thing_inside res_ty
                 -- NB:  The rec_ids for the recursive things

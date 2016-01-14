@@ -384,15 +384,26 @@ tc_pat penv (ViewPat expr pat _) overall_pat_ty thing_inside
          -- where overall_pat_ty is an instance of OPT'.
         ; (expr',expr'_inferred) <- tcInferSigma expr
 
-         -- next, we check that expr is coercible to `overall_pat_ty -> pat_ty`
-        ; (expr_wrap, pat_ty) <- tcInfer $ \ pat_ty ->
-                tcSubTypeDS_O (exprCtOrigin (unLoc expr)) GenSigCtxt (Just expr)
-                              expr'_inferred
-                              (mkFunTy overall_pat_ty pat_ty)
+         -- expression must be a function
+        ; let expr_orig = exprCtOrigin (unLoc expr)
+        ; (expr_wrap1, [inf_arg_ty], inf_res_ty)
+            <- matchActualFunTys herald expr_orig 1 expr'_inferred
+            -- expr_wrap1 :: expr'_inferred "->" (inf_arg_ty -> inf_res_ty)
 
-         -- pattern must have pat_ty
-        ; (pat', res) <- tc_lpat pat pat_ty penv thing_inside
+         -- check that overall pattern is more polymorphic than arg type
+        ; let pat_origin = GivenOrigin (SigSkol GenSigCtxt overall_pat_ty)
+        ; expr_wrap2 <- tcSubTypeO pat_origin GenSigCtxt overall_pat_ty
+                                   (mkCheckExpType inf_arg_ty)
+            -- expr_wrap2 :: overall_pat_ty "->" inf_arg_ty
 
+         -- pattern must have inf_res_ty
+        ; (pat', res) <- tc_lpat pat inf_res_ty penv thing_inside
+
+        ; let expr_wrap2' = mkWpFun expr_wrap2 idHsWrapper
+                                    overall_pat_ty inf_res_ty
+               -- expr_wrap2' :: (inf_arg_ty -> inf_res_ty) "->"
+               --                (overall_pat_ty -> inf_res_ty)
+              expr_wrap = expr_wrap2' <.> expr_wrap1
         ; return (ViewPat (mkLHsWrap expr_wrap expr') pat' overall_pat_ty, res) }
 
 -- Type signatures in patterns

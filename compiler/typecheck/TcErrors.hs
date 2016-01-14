@@ -1001,25 +1001,28 @@ mkEqErr1 ctxt ct
             where
               t_or_k = ctLocTypeOrKind_maybe loc
 
-          KindEqOrigin cty1 cty2 sub_o sub_t_or_k
+          KindEqOrigin cty1 mb_cty2 sub_o sub_t_or_k
             -> (True, Nothing, msg1 $$ msg2)
             where
               sub_what = case sub_t_or_k of Just KindLevel -> text "kinds"
                                             _              -> text "types"
               msg1 = sdocWithDynFlags $ \dflags ->
-                     if not (gopt Opt_PrintExplicitCoercions dflags) &&
-                        (cty1 `pickyEqType` cty2)
-                     then text "When matching the kind of" <+> quotes (ppr cty1)
-                     else
-                     hang (text "When matching" <+> sub_what)
-                        2 (vcat [ ppr cty1 <+> dcolon <+> ppr (typeKind cty1)
-                                , ppr cty2 <+> dcolon <+> ppr (typeKind cty2) ])
+                     case mb_cty2 of
+                       Just cty2
+                         |  gopt Opt_PrintExplicitCoercions dflags
+                         || not (cty1 `pickyEqType` cty2)
+                         -> hang (text "When matching" <+> sub_what)
+                               2 (vcat [ ppr cty1 <+> dcolon <+>
+                                         ppr (typeKind cty1)
+                                       , ppr cty2 <+> dcolon <+>
+                                         ppr (typeKind cty2) ])
+                       _ -> text "When matching the kind of" <+> quotes (ppr cty1)
               msg2 = case sub_o of
-                       TypeEqOrigin {} ->
+                       TypeEqOrigin {}
+                         | Just cty2 <- mb_cty2 ->
                          thdOf3 (mkExpectedActualMsg cty1 cty2 sub_o sub_t_or_k
                                                      expandSyns)
-                       _ ->
-                         empty
+                       _ -> empty
           _ -> (True, Nothing, empty)
 
 -- | This function tries to reconstruct why a "Coercible ty1 ty2" constraint
@@ -1392,7 +1395,8 @@ mkExpectedActualMsg :: Type -> Type -> CtOrigin -> Maybe TypeOrKind -> Bool
                     -> (Bool, Maybe SwapFlag, SDoc)
 -- NotSwapped means (actual, expected), IsSwapped is the reverse
 -- First return val is whether or not to print a herald above this msg
-mkExpectedActualMsg ty1 ty2 (TypeEqOrigin { uo_actual = act, uo_expected = exp
+mkExpectedActualMsg ty1 ty2 (TypeEqOrigin { uo_actual = act
+                                          , uo_expected = Check exp
                                           , uo_thing = maybe_thing })
                     m_level printExpanded
   | KindLevel <- level, occurs_check_error       = (True, Nothing, empty)
@@ -2159,8 +2163,9 @@ relevantBindings want_filtering ctxt ct
              -- For *kind* errors, report the relevant bindings of the
              -- enclosing *type* equality, because that's more useful for the programmer
              extra_tvs = case tidy_orig of
-                             KindEqOrigin t1 t2 _ _ -> tyCoVarsOfTypes [t1,t2]
-                             _                      -> emptyVarSet
+                             KindEqOrigin t1 m_t2 _ _ -> tyCoVarsOfTypes $
+                                                         t1 : maybeToList m_t2
+                             _                        -> emptyVarSet
        ; traceTc "relevantBindings" $
            vcat [ ppr ct
                 , pprCtOrigin (ctLocOrigin loc)

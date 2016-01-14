@@ -2425,8 +2425,8 @@ mkGivenLoc tclvl skol_info env
 mkKindLoc :: TcType -> TcType   -- original *types* being compared
           -> CtLoc -> CtLoc
 mkKindLoc s1 s2 loc = setCtLocOrigin (toKindLoc loc)
-                        (KindEqOrigin s1 s2 (ctLocOrigin loc)
-                                            (ctLocTypeOrKind_maybe loc))
+                        (KindEqOrigin s1 (Just s2) (ctLocOrigin loc)
+                                      (ctLocTypeOrKind_maybe loc))
 
 -- | Take a CtLoc and moves it to the kind level
 toKindLoc :: CtLoc -> CtLoc
@@ -2600,13 +2600,13 @@ data CtOrigin
                                    -- function or instance
 
   | TypeEqOrigin { uo_actual   :: TcType
-                 , uo_expected :: TcType
+                 , uo_expected :: ExpType
                  , uo_thing    :: Maybe ErrorThing
                                   -- ^ The thing that has type "actual"
                  }
 
   | KindEqOrigin
-      TcType TcType             -- A kind equality arising from unifying these two types
+      TcType (Maybe TcType)     -- A kind equality arising from unifying these two types
       CtOrigin                  -- originally arising from this
       (Maybe TypeOrKind)        -- the level of the eq this arises from
 
@@ -2813,9 +2813,13 @@ pprCtOrigin (FunDepOrigin2 pred1 orig1 pred2 loc2)
                , hang (ptext (sLit "instance") <+> quotes (ppr pred2))
                     2 (ptext (sLit "at") <+> ppr loc2) ])
 
-pprCtOrigin (KindEqOrigin t1 t2 _ _)
+pprCtOrigin (KindEqOrigin t1 (Just t2) _ _)
   = hang (ctoHerald <+> ptext (sLit "a kind equality arising from"))
        2 (sep [ppr t1, char '~', ppr t2])
+
+pprCtOrigin (KindEqOrigin t1 Nothing _ _)
+  = hang (ctoHerald <+> text "a kind equality when matching")
+       2 (ppr t1)
 
 pprCtOrigin (UnboundOccurrenceOf name)
   = ctoHerald <+> ptext (sLit "an undeclared identifier") <+> quotes (ppr name)

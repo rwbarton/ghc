@@ -14,7 +14,7 @@ module Inst (
        instCall, instDFunType, instStupidTheta,
        newWanted, newWanteds,
 
-       newOverloadedLit, newNonTrivialOverloadedLit, mkOverLit,
+       newExpOverloadedLit, newOverloadedLit, mkOverLit,
 
        newClsInst,
        tcGetInsts, tcGetInstEnvs, getOverlapFlag,
@@ -338,19 +338,48 @@ know that's what we want.  This may save some time, by not
 temporarily generating overloaded literals, but it won't catch all
 cases (the rest are caught in lookupInst).
 
+Note [Overloading newOverloadedLit]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+newOverloadedLit and friends work in two different contexts: in expressions
+and in patterns. The problem is that there is an impedance mismatch between
+these two applications. Patterns work with TcTypes and must instantiate
+to remove foralls. Expressions work with ExpTypes and must skolemise to
+remove foralls. Happily, the skolemisation is done before this code is
+called. But we still must to some work to get back and forth between
+TcTypes and ExpTypes.
+
 -}
+
+-- | Variant of 'newOverloadedLit' that takes an 'ExpType'
+newExpectedOverLit :: HsOverLit Name
+                   -> ExpType
+                   -> TcM (HsOverLit TcId)
+newExpectedOverLit lit res_ty
+  = snd <$> new_over_lit lit res_ty (Shouldn'tHappenOrigin "HsOverLit")
 
 newOverloadedLit :: HsOverLit Name
                  -> TcSigmaType  -- if nec'y, this type is instantiated...
                  -> CtOrigin     -- ... using this CtOrigin
                  -> TcM (HsWrapper, HsOverLit TcId)
                    -- wrapper :: input type "->" type of result
-newOverloadedLit
+newOverloadedLit lit res_ty res_orig
+  = new_over_lit lit (mkCheckExpType res_ty) res_orig
+
+-- See Note [Overloading newOverloadedLit]
+new_over_lit :: HsOverLit Name
+             -> ExpType
+             -> CtOrigin
+             -> TcM (HsWrapper, HsOverLit TcId)
+new_over_lit
   lit@(OverLit { ol_val = val, ol_rebindable = rebindable }) res_ty res_orig
   | not rebindable
-    -- all built-in overloaded lits are not higher-rank, so skolemise.
+    -- all built-in overloaded lits are not higher-rank, so instantiate.
+    -- Note that when instantiation does anything at all, we were called
+    -- during checking a *pattern*. tcExpr deals only with skolemised
+    -- ExpTypes. See also Note [Overloading newOverloadedLit].
     -- this is necessary for shortCutLit.
-  = do { (wrap, insted_ty) <- deeplyInstantiate res_orig res_ty
+  = do { res_ty <- expTypeToType res_ty
+       ; (wrap, insted_ty) <- deeplyInstantiate res_orig res_ty
        ; dflags <- getDynFlags
        ; case shortCutLit dflags val insted_ty of
         -- Do not generate a LitInst for rebindable syntax.
@@ -361,7 +390,8 @@ newOverloadedLit
                                , lit { ol_witness = expr, ol_type = insted_ty
                                      , ol_rebindable = False } )
            Nothing   -> (wrap, ) <$>
-                        newNonTrivialOverloadedLit orig lit insted_ty }
+                        newNonTrivialOverloadedLit orig lit
+                                                   (mkCheckExpType insted_ty) }
 
   | otherwise
   = do { lit' <- newNonTrivialOverloadedLit orig lit res_ty
@@ -373,21 +403,20 @@ newOverloadedLit
 -- newOverloadedLit in TcUnify
 newNonTrivialOverloadedLit :: CtOrigin
                            -> HsOverLit Name
-                           -> TcSigmaType
+                           -> ExpType
                            -> TcM (HsOverLit TcId)
 newNonTrivialOverloadedLit orig
   lit@(OverLit { ol_val = val, ol_witness = meth_name
                , ol_rebindable = rebindable }) res_ty
   = do  { hs_lit <- mkOverLit val
         ; let lit_ty = hsLitType hs_lit
-        ; fi' <- tcSyntaxOp orig meth_name (mkFunTy lit_ty res_ty)
-                -- Overloaded literals must have liftedTypeKind, because
-                -- we're instantiating an overloaded function here,
-                -- whereas res_ty might be openTypeKind. This was a bug in 6.2.2
-                -- However this'll be picked up by tcSyntaxOp if necessary
-        ; let witness = HsApp (noLoc fi') (noLoc (HsLit hs_lit))
-        ; return (lit { ol_witness = witness, ol_type = res_ty,
-                        ol_rebindable = rebindable }) }
+        ; (_, fi') <- tcSyntaxOp orig meth_name [SynType lit_ty] res_ty $
+                      \_ -> return ()
+        ; let witness = HsApp (noLoc fi') (nlHsLit hs_lit)
+        ; res_ty <- readExpType res_ty
+        ; return (lit { ol_witness = witness
+                      , ol_type = res_ty
+                      , ol_rebindable = rebindable }) }
 
 ------------
 mkOverLit :: OverLitVal -> TcM HsLit

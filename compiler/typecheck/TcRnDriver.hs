@@ -1475,7 +1475,8 @@ check_main dflags tcg_env explicit_mod_hdr
         ; main_expr
                 <- addErrCtxt mainCtxt    $
                    tcMonoExpr (L loc (HsVar (L loc main_name)))
-                                            (mkTyConApp ioTyCon [res_ty])
+                                            (mkCheckExpType $
+                                             mkTyConApp ioTyCon [res_ty])
 
                 -- See Note [Root-main Id]
                 -- Construct the binding

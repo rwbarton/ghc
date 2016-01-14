@@ -31,6 +31,11 @@ module TcMType (
   newMetaDetails, isFilledMetaTyVar, isUnfilledMetaTyVar,
 
   --------------------------------
+  -- Expected types
+  ExpType, mkCheckExpType, newOpenInferExpType, readExpType, writeExpType,
+  toMonoExpType, checkingExpType_maybe,
+
+  --------------------------------
   -- Creating fresh type variables for pm checking
   genInstSkolTyVarsX,
 
@@ -271,6 +276,108 @@ checkCoercionHole co h r t1 t2
   | otherwise
   = return co
 
+{-
+************************************************************************
+*
+    Expected types
+*
+************************************************************************
+
+Note [ExpType]
+~~~~~~~~~~~~~~
+
+An ExpType is used as the "expected type" when type-checking an expression.
+An ExpType can hold a "hole" that can be filled in by the type-checker.
+This allows us to have one tcExpr that works in both checking mode and
+synthesis mode (that is, bidirectional type-checking). Previously, this
+was achieved by using ordinary unification variables, but we don't need
+or want that generality. (For example, #11397 was caused by doing the
+wrong thing with unification variables.) Instead, we observe that these
+holes should
+
+1. never be nested
+2. never appear as the type of a variable
+3. be used linearly (never be duplicated)
+
+By defining ExpType, separately from Type, we can achieve goals 1 and 2
+statically.
+
+See also [wiki:Typechecking]
+
+-}
+
+-- | An expected type to check against during type-checking.
+data ExpType = Check TcType
+             | Infer Unique  -- ^ for debugging only
+                     Kind
+                     (IORef (Maybe TcType))
+
+instance Outputable ExpType where
+  ppr (Check ty) = ppr ty
+  ppr (Infer u ki _)
+    = parens (text "Infer" <> braces (ppr u) <+> dcolon <+> ppr ki)
+
+-- | Make an 'ExpType' suitable for checking.
+mkCheckExpType :: TcType -> ExpType
+mkCheckExpType = Check
+
+-- | Make an 'ExpType' suitable for inferring a type of kind * or #.
+newOpenInferExpType :: TcM ExpType
+newOpenInferExpType
+  = do { lev <- newFlexiTyVarTy levityTy
+       ; u <- newUnique
+       ; let ki = tYPE lev
+       ; traceTc "newOpenInferExpType" (ppr u <+> dcolon <+> ppr ki)
+       ; ref <- newMutVar Nothing
+       ; return (Infer u ki ref) }
+
+-- | Extract a type out of an ExpType. Panics if no type is in there.
+readExpType :: ExpType -> TcM TcType
+readExpType (Check ty) = return ty
+readExpType (Infer u _ ref)
+  = do { cts <- readMutVar ref
+       ; case cts of
+           Nothing -> pprPanic "Unknown expected type" (ppr u)
+           Just ty -> return ty }
+
+-- | Write into an 'ExpType'. It must be an 'Infer'.
+writeExpType :: ExpType -> TcType -> TcM ()
+writeExpType (Infer u ki ref) ty
+  | debugIsOn
+  = do { ki1 <- zonkTcType (typeKind ty)
+       ; ki2 <- zonkTcType ki
+       ; MASSERT2( ki1 `eqType` ki2, ppr ki1 $$ ppr ki2 $$ ppr u )
+       ; cts <- readTcRef ref
+       ; case cts of
+           Just already_there -> pprPanic "writeExpType"
+                                   (vcat [ ppr u
+                                         , ppr ty
+                                         , ppr already_there ])
+           Nothing -> write }
+  | otherwise
+  = write
+  where
+    write = do { traceTc "Filling ExpType" $
+                   ppr u <+> text ":=" <+> ppr ty
+               ; writeTcRef ref (Just ty) }
+writeExpType (Check ty1) ty2 = pprPanic "writeExpType" (ppr ty1 $$ ppr ty2)
+
+-- | Returns the expected type when in checking mode. Use of this function
+-- is morally suspect and likely compromises the principal types property.
+checkingExpType_maybe :: ExpType -> Maybe TcType
+checkingExpType_maybe (Check ty) = Just ty
+checkingExpType_maybe _          = Nothing
+
+-- | Extracts the expected type if there is one, or generates a new
+-- TauTv if there isn't.
+expTypeToType :: ExpType -> TcM TcType
+expTypeToType (Check ty) = return ty
+expTypeToType (Infer u ki ref)
+  = do { tau <- newFlexiTyVarTy ki
+       ; writeMutVar ref (Just tau)
+       ; traceTc "Forcing ExpType to be monomorphic:"
+                 (ppr u <+> dcolon <+> ppr ki <+> text ":=" <+> ppr tau)
+       ; return tau }
 
 {-
 ************************************************************************
@@ -570,23 +677,6 @@ genInstSkolTyVarsX loc subst tvs = instSkolTyCoVarsX (mkTcSkolTyVar loc False) s
         MetaTvs: TauTvs
 *                                                                      *
 ************************************************************************
-
-Note [Sort-polymorphic tyvars accept foralls]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Here is a common paradigm:
-   foo :: (forall a. a -> a) -> Int
-   foo = error "urk"
-To make this work we need to instantiate 'error' with a polytype.
-A similar case is
-   bar :: Bool -> (forall a. a->a) -> Int
-   bar True = \x. (x 3)
-   bar False = error "urk"
-Here we need to instantiate 'error' with a polytype.
-
-But 'error' has an sort-polymorphic type variable, precisely so that
-we can instantiate it with Int#.  So we also allow such type variables
-to be instantiate with foralls.  It's a bit of a hack, but seems
-straightforward.
 
 Note [Never need to instantiate coercion variables]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1213,16 +1303,24 @@ zonkTidyOrigin env orig@(TypeEqOrigin { uo_actual   = act
                                       , uo_expected = exp
                                       , uo_thing    = m_thing })
   = do { (env1, act') <- zonkTidyTcType env  act
+       ; (env2, exp') <- mkCheckExpType <$> case exp of
+           Check exp_ty -> zonkTidyTcType env1 exp_ty
+           Infer u ki _ -> do { x <- newFlexiTyVarTy ki
+                              ; traceTc "Zonking away ExpType" $
+                                  ppr u <+> text ":=" <+> ppr x
+                              ; zonkTidyTcType env1 x }
        ; (env2, exp') <- zonkTidyTcType env1 exp
        ; (env3, m_thing') <- zonkTidyErrorThing env2 m_thing
        ; return ( env3, orig { uo_actual   = act'
                              , uo_expected = exp'
                              , uo_thing    = m_thing' }) }
-zonkTidyOrigin env (KindEqOrigin ty1 ty2 orig t_or_k)
-  = do { (env1, ty1') <- zonkTidyTcType env  ty1
-       ; (env2, ty2') <- zonkTidyTcType env1 ty2
-       ; (env3, orig') <- zonkTidyOrigin env2 orig
-       ; return (env3, KindEqOrigin ty1' ty2' orig' t_or_k) }
+zonkTidyOrigin env (KindEqOrigin ty1 m_ty2 orig t_or_k)
+  = do { (env1, ty1')   <- zonkTidyTcType env  ty1
+       ; (env2, m_ty2') <- case m_ty2 of
+                             Just ty2 -> second Just <$> zonkTidyTcType env1 ty2
+                             Nothing  -> return (env1, Nothing)
+       ; (env3, orig')  <- zonkTidyOrigin env2 orig
+       ; return (env3, KindEqOrigin ty1' m_ty2' orig' t_or_k) }
 zonkTidyOrigin env (FunDepOrigin1 p1 l1 p2 l2)
   = do { (env1, p1') <- zonkTidyTcType env  p1
        ; (env2, p2') <- zonkTidyTcType env1 p2

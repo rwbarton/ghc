@@ -207,7 +207,7 @@ tcBrackTy (TExpBr _)  = panic "tcUntypedBracket: Unexpected TExpBr"
 tcPendingSplice :: PendingRnSplice -> TcM PendingTcSplice
 tcPendingSplice (PendingRnSplice flavour splice_name expr)
   = do { res_ty <- tcMetaTy meta_ty_name
-       ; expr' <- tcMonoExpr expr res_ty
+       ; expr' <- tcMonoExpr expr (mkCheckExpType res_ty)
        ; return (PendingTcSplice splice_name expr') }
   where
      meta_ty_name = case flavour of
@@ -452,7 +452,7 @@ tcNestedSplice pop_stage (TcPending ps_var lie_var) splice_name expr res_ty
   = do { meta_exp_ty <- tcTExpTy res_ty
        ; expr' <- setStage pop_stage $
                   setConstraintVar lie_var $
-                  tcMonoExpr expr meta_exp_ty
+                  tcMonoExpr expr (mkCheckExpType meta_exp_ty)
        ; untypeq <- tcLookupId unTypeQName
        ; let expr'' = mkHsApp (nlHsTyApp untypeq [res_ty]) expr'
        ; ps <- readMutVar ps_var
@@ -470,7 +470,7 @@ tcTopSplice expr res_ty
          -- making sure it has type Q (T res_ty)
          meta_exp_ty <- tcTExpTy res_ty
        ; zonked_q_expr <- tcTopSpliceExpr Typed $
-                          tcMonoExpr expr meta_exp_ty
+                          tcMonoExpr expr (mkCheckExpType meta_exp_ty)
 
          -- Run the expression
        ; expr2 <- runMetaE zonked_q_expr
