@@ -12,7 +12,7 @@ module TcUnify (
   -- Full-blown subsumption
   tcWrapResult, tcWrapResultO, tcSkolemise,
   tcSubTypeHR, tcSubType, tcSubTypeO, tcSubType_NC, tcSubTypeDS, tcSubTypeDS_O,
-  tcSubTypeDS_NC, tcSubTypeDS_NC_O,
+  tcSubTypeDS_NC, tcSubTypeDS_NC_O, tcSubTypeHR_ExpType,
   checkConstraints, buildImplication, buildImplicationFor,
 
   -- Various unifications
@@ -617,6 +617,19 @@ tcSubTypeDS_NC ctxt maybe_thing ty_actual ty_expected
                           , uo_expected = ty_expected
                           , uo_thing    = mkErrorThing <$> maybe_thing }
 
+-- | This is like 'tcSubTypeHR' but accepts an 'ExpType' as the /actual/ type.
+-- You probably want this only when looking at patterns, never expressions.
+tcSubTypeHR_ExpType :: CtOrigin -> ExpType -> TcSigmaType -> TcM HsWrapper
+tcSubTypeHR_ExpType orig ty_actual@(Infer _ ki _) ty_expected
+  = do { ki_co <- uType kind_orig KindLevel ki (typeKind ty_expected)
+       ; writeExpType ty_actual (ty_expected `mkCastTy` mkTcSymCo ki_co)
+       ; return idHsWrapper }
+  where
+    kind_orig = KindEqOrigin ty_expected Nothing orig (Just TypeLevel)
+
+tcSubTypeHR_ExpType orig (Check ty_actual) ty_expected
+  = tcSubTypeHR orig noThing ty_actual (mkCheckExpType ty_expected)
+
 tcSubTypeDS_NC_O :: Outputable a
                  => CtOrigin   -- origin used for instantiation only
                  -> UserTypeCtxt
@@ -627,7 +640,8 @@ tcSubTypeDS_NC_O :: Outputable a
 tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual ty_expected
   Infer _ ki _ <- ty_expected
   = do { ki_co <- uType kind_orig KindLevel (typeKind ty_actual) ki
-       ; writeExpType ty_expected (ty_actual `mkCastTy` ki_co) }
+       ; writeExpType ty_expected (ty_actual `mkCastTy` ki_co)
+       ; return idHsWrapper }
   Check ty_expected' <- ty_expected
   = tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected'
   where

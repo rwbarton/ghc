@@ -155,7 +155,7 @@ deeplySkolemise ty
 topInstantiate :: CtOrigin -> TcSigmaType -> TcM (HsWrapper, TcRhoType)
 -- if    topInstantiate ty = (wrap, rho)
 -- and   e :: ty
--- then  wrap e :: rho
+-- then  wrap e :: rho  (that is, wrap :: ty "->" rho)
 topInstantiate = top_instantiate True
 
 -- | Instantiate all outer 'Invisible' binders
@@ -215,6 +215,7 @@ deeplyInstantiate :: CtOrigin -> TcSigmaType -> TcM (HsWrapper, TcRhoType)
 -- if    deeplyInstantiate ty = (wrap, rho)
 -- and   e :: ty
 -- then  wrap e :: rho
+-- That is, wrap :: ty "->" rho
 
 deeplyInstantiate orig ty
   | Just (arg_tys, tvs, theta, rho) <- tcDeepSplitSigmaTy_maybe ty
@@ -338,64 +339,30 @@ know that's what we want.  This may save some time, by not
 temporarily generating overloaded literals, but it won't catch all
 cases (the rest are caught in lookupInst).
 
-Note [Overloading newOverloadedLit]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-newOverloadedLit and friends work in two different contexts: in expressions
-and in patterns. The problem is that there is an impedance mismatch between
-these two applications. Patterns work with TcTypes and must instantiate
-to remove foralls. Expressions work with ExpTypes and must skolemise to
-remove foralls. Happily, the skolemisation is done before this code is
-called. But we still must to some work to get back and forth between
-TcTypes and ExpTypes.
-
 -}
 
--- | Variant of 'newOverloadedLit' that takes an 'ExpType'
-newExpectedOverLit :: HsOverLit Name
-                   -> ExpType
-                   -> TcM (HsOverLit TcId)
-newExpectedOverLit lit res_ty
-  = snd <$> new_over_lit lit res_ty (Shouldn'tHappenOrigin "HsOverLit")
-
 newOverloadedLit :: HsOverLit Name
-                 -> TcSigmaType  -- if nec'y, this type is instantiated...
-                 -> CtOrigin     -- ... using this CtOrigin
-                 -> TcM (HsWrapper, HsOverLit TcId)
-                   -- wrapper :: input type "->" type of result
-newOverloadedLit lit res_ty res_orig
-  = new_over_lit lit (mkCheckExpType res_ty) res_orig
-
--- See Note [Overloading newOverloadedLit]
-new_over_lit :: HsOverLit Name
-             -> ExpType
-             -> CtOrigin
-             -> TcM (HsWrapper, HsOverLit TcId)
-new_over_lit
+                 -> ExpType   -- must be a rho-type; deeply instantiated/skolemised
+                 -> TcM (HsOverLit TcId)
+newOverloadedLit
   lit@(OverLit { ol_val = val, ol_rebindable = rebindable }) res_ty res_orig
   | not rebindable
-    -- all built-in overloaded lits are not higher-rank, so instantiate.
-    -- Note that when instantiation does anything at all, we were called
-    -- during checking a *pattern*. tcExpr deals only with skolemised
-    -- ExpTypes. See also Note [Overloading newOverloadedLit].
-    -- this is necessary for shortCutLit.
+    -- all built-in overloaded lits are tau-types, so we can just
+    -- tauify the ExpType
   = do { res_ty <- expTypeToType res_ty
-       ; (wrap, insted_ty) <- deeplyInstantiate res_orig res_ty
        ; dflags <- getDynFlags
-       ; case shortCutLit dflags val insted_ty of
+       ; case shortCutLit dflags val res_ty of
         -- Do not generate a LitInst for rebindable syntax.
         -- Reason: If we do, tcSimplify will call lookupInst, which
         --         will call tcSyntaxName, which does unification,
         --         which tcSimplify doesn't like
-           Just expr -> return ( wrap
-                               , lit { ol_witness = expr, ol_type = insted_ty
-                                     , ol_rebindable = False } )
-           Nothing   -> (wrap, ) <$>
-                        newNonTrivialOverloadedLit orig lit
+           Just expr -> return (lit { ol_witness = expr, ol_type = insted_ty
+                                    , ol_rebindable = False })
+           Nothing   -> newNonTrivialOverloadedLit orig lit
                                                    (mkCheckExpType insted_ty) }
 
   | otherwise
-  = do { lit' <- newNonTrivialOverloadedLit orig lit res_ty
-       ; return (idHsWrapper, lit') }
+  = newNonTrivialOverloadedLit orig lit res_ty
   where
     orig = LiteralOrigin lit
 

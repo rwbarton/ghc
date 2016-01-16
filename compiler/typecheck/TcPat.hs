@@ -426,12 +426,15 @@ tc_pat penv (ListPat pats _ Nothing) pat_ty thing_inside
         }
 
 tc_pat penv (ListPat pats _ (Just (_,e))) pat_ty thing_inside
-  = do  { list_pat_ty <- newFlexiTyVarTy liftedTypeKind
-        ; e' <- tcSyntaxOp ListOrigin e (mkFunTy pat_ty list_pat_ty)
-        ; (coi, elt_ty) <- matchExpectedPatTy matchExpectedListTy penv list_pat_ty
-        ; (pats', res) <- tcMultiple (\p -> tc_lpat p elt_ty)
-                                     pats penv thing_inside
-        ; return (mkHsWrapPat coi (ListPat pats' elt_ty (Just (pat_ty,e'))) list_pat_ty, res)
+  = do  { tau_pat_ty <- expTypeToType pat_ty
+        ; ((pats', res, elt_ty), e')
+            <- tcSyntaxOpGen ListOrigin e (SynType (mkCheckExpType tau_pat_ty)
+                                           `SynFun` SynList) $
+                 \ elt_ty ->
+                 do { (pats', res) <- tcMultiple (\p -> tc_lpat p elt_ty)
+                                                 pats penv thing_inside
+                    ; return (pats', res, elt_ty) }
+        ; return (ListPat pats' elt_ty (Just (tau_pat_ty,e')), res)
         }
 
 tc_pat penv (PArrPat pats _) pat_ty thing_inside
@@ -487,42 +490,102 @@ tc_pat _ (LitPat simple_lit) pat_ty thing_inside
 
 ------------------------
 -- Overloaded patterns: n, and n+k
-tc_pat (PE { pe_orig = pat_orig })
-       (NPat (L l over_lit) mb_neg eq) pat_ty thing_inside
+
+-- In the case of a negative literal (the more complicated case),
+-- we get
+--
+--   case v of (-5) -> blah
+--
+-- becoming
+--
+--   if v == (negate (fromInteger 5)) then blah else ...
+--
+-- There are two bits of rebindable syntax:
+--   (==)   :: pat_ty -> neg_lit_ty -> Bool
+--   negate :: lit_ty -> neg_lit_ty
+-- where lit_ty is the type of the overloaded literal 5.
+--
+-- When there is no negation, neg_lit_ty and lit_ty are the same
+tc_pat _ (NPat (L l over_lit) mb_neg eq) pat_ty thing_inside
   = do  { let orig = LiteralOrigin over_lit
-        ; (wrap, lit') <- newOverloadedLit over_lit pat_ty pat_orig
-        ; eq'     <- tcSyntaxOp orig eq (mkFunTys [pat_ty, pat_ty] boolTy)
-        ; mb_neg' <- case mb_neg of
-                        Nothing  -> return Nothing      -- Positive literal
-                        Just neg ->     -- Negative literal
-                                        -- The 'negate' is re-mappable syntax
-                            do { neg' <- tcSyntaxOp orig neg (mkFunTy pat_ty pat_ty)
-                               ; return (Just neg') }
+        ; ((lit', mb_neg'), eq')
+            <- tcSyntaxOp orig eq [SynType pat_ty, SynAny]
+                          (mkCheckExpType boolTy) $
+               \ [neg_lit_ty] ->
+               let new_over_lit lit_ty = newOverloadedLit over_lit lit_ty
+               in case mb_neg of
+                 Nothing  -> (, Nothing) <$> new_over_lit neg_lit_ty
+                 Just neg -> -- Negative literal
+                             -- The 'negate' is re-mappable syntax
+                   second Just <$>
+                   (tcSyntaxOp orig neg [SynRho] (mkCheckExpType neg_lit_ty) $
+                    \ [lit_ty] -> new_over_lit lit_ty)
+
         ; res <- thing_inside
-        ; return (mkHsWrapPat wrap (NPat (L l lit') mb_neg' eq') pat_ty, res) }
+        ; return (NPat (L l lit') mb_neg' eq', res) }
 
-tc_pat penv (NPlusKPat (L nm_loc name) (L loc lit) ge minus) pat_ty thing_inside
-  = do  { (co, bndr_id) <- setSrcSpan nm_loc (tcPatBndr penv name pat_ty)
-        ; let pat_ty' = idType bndr_id
-              orig    = LiteralOrigin lit
-        ; (wrap_lit, lit') <- newOverloadedLit lit pat_ty' (pe_orig penv)
+{-
+Note [NPlusK patterns]
+~~~~~~~~~~~~~~~~~~~~~~
+From
 
-        -- The '>=' and '-' parts are re-mappable syntax
-        ; ge'    <- tcSyntaxOp orig ge    (mkFunTys [pat_ty', pat_ty'] boolTy)
-        ; minus' <- tcSyntaxOp orig minus (mkFunTys [pat_ty', pat_ty'] pat_ty')
-        ; let pat' = mkHsWrapPat wrap_lit
-                                 (NPlusKPat (L nm_loc bndr_id)
-                                            (L loc lit')
-                                            ge' minus')
-                                 pat_ty
+  case v of x + 5 -> blah
+
+we get
+
+  if v >= 5 then (\x -> blah) (v - 5) else ...
+
+There are two bits of rebindable syntax:
+  (>=) :: pat_ty -> lit1_ty -> Bool
+  (-)  :: pat_ty -> lit2_ty -> var_ty
+
+lit1_ty and lit2_ty could conceivably be different.
+var_ty is the type inferred for x, the variable in the pattern.
+
+If the pushed-down pattern type isn't a tau-type, the two pat_ty's above
+could conceivably be different specializations. But this is very much
+like the situation in Note [Case branches must be taus] in TcMatches.
+So we tauify the pat_ty before proceeding.
+
+Note that we need to type-check the literal twice, because it is used
+twice, and may be used at different types. The second HsOverLit stored in the
+AST is used for the subtraction operation.
+-}
+
+-- See Note [NPlusK patterns]
+tc_pat penv (NPlusKPat (L nm_loc name) (L loc lit) _ ge minus) pat_ty thing_inside
+  = do  { pat_ty <- expTypeToType pat_ty
+        ; let orig = LiteralOrigin lit
+        ; (lit1', ge')
+            <- tcSyntaxOp orig ge [synKnownType pat_ty, SynRho]
+                                  (mkCheckExpType boolTy) $
+               \ [lit1_ty] ->
+               newOverloadedLit lit lit1_ty
+        ; ((lit2', minus_wrap, bndr_id), minus')
+            <- tcSyntaxOpGen orig minus
+                 (synKnownType pat_ty `SynFun` SynRho `SynFun` SynAny) $
+               \ [lit2_ty, var_ty] ->
+               do { lit2' <- newOverloadedLit lit lit2_ty
+                  ; (co, bndr_id) <- setSrcSpan nm_loc $
+                                     tcPatBndr penv name (mkCheckExpType var_ty)
+                           -- co :: var_ty ~ idType bndr_id
+                  ; let minus_wrap = mkWpFuns [ (pat_ty, idHsWrapper)
+                                              , (lit2_ty, idHsWrapper) ]
+                                              var_ty (mkWpCastN co)
+                           -- minus_wrap is applicable to minus'
+                  ; return (lit2', minus_wrap, bndr_id) }
 
         -- The Report says that n+k patterns must be in Integral
-        -- We may not want this when using re-mappable syntax, though (ToDo?)
-        ; icls <- tcLookupClass integralClassName
-        ; instStupidTheta orig [mkClassPred icls [pat_ty']]
+        -- but it's silly to insist on this in the RebindableSyntax case
+        ; unlessM (xoptM LangExt.RebindableSyntax) $
+          do { icls <- tcLookupClass integralClassName
+             ; instStupidTheta orig [mkClassPred icls [pat_ty]] }
 
         ; res <- tcExtendIdEnv1 name bndr_id thing_inside
-        ; return (mkHsWrapPatCo co pat' pat_ty, res) }
+
+        ; let pat' = NPlusKPat (L nm_loc bndr_id) (L loc lit1') lit2'
+                               ge' (mkHsWrap minus_wrap minus')
+        ; return (pat', res) }
 
 tc_pat _ _other_pat _ _ = panic "tc_pat"        -- ConPatOut, SigPatOut
 

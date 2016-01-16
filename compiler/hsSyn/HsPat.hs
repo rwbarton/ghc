@@ -197,7 +197,8 @@ data Pat id
   -- For details on above see note [Api annotations] in ApiAnnotation
   | NPlusKPat       (Located id)        -- n+k pattern
                     (Located (HsOverLit id)) -- It'll always be an HsIntegral
-                    (SyntaxExpr id)     -- (>=) function, of type t->t->Bool
+                    (PostTc id (HsOverLit id)) -- See Note [NPlusK patterns] in TcPat
+                    (SyntaxExpr id)     -- (>=) function, of type t1->t2->Bool
                     (SyntaxExpr id)     -- Name of '-' (see RnEnv.lookupSyntaxName)
 
         ------------ Pattern type signatures ---------------

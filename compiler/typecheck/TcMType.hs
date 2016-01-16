@@ -33,7 +33,7 @@ module TcMType (
   --------------------------------
   -- Expected types
   ExpType, mkCheckExpType, newOpenInferExpType, readExpType, writeExpType,
-  toMonoExpType, checkingExpType_maybe,
+  toMonoExpType, checkingExpType_maybe, checkingExpType
 
   --------------------------------
   -- Creating fresh type variables for pm checking
@@ -362,11 +362,16 @@ writeExpType (Infer u ki ref) ty
                ; writeTcRef ref (Just ty) }
 writeExpType (Check ty1) ty2 = pprPanic "writeExpType" (ppr ty1 $$ ppr ty2)
 
--- | Returns the expected type when in checking mode. Use of this function
--- is morally suspect and likely compromises the principal types property.
+-- | Returns the expected type when in checking mode.
 checkingExpType_maybe :: ExpType -> Maybe TcType
 checkingExpType_maybe (Check ty) = Just ty
 checkingExpType_maybe _          = Nothing
+
+-- | Returns the expected type when in checking mode. Panics if in inference
+-- mode.
+checkingExpType :: ExpType -> TcType
+checkingExpType (Check ty) = ty
+checkingExpType et         = pprPanic "checkingExpType" (ppr et)
 
 -- | Extracts the expected type if there is one, or generates a new
 -- TauTv if there isn't.

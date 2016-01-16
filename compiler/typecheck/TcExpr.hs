@@ -10,7 +10,8 @@
 
 module TcExpr ( tcPolyExpr, tcMonoExpr, tcMonoExprNC,
                 tcInferSigma, tcInferSigmaNC, tcInferRho, tcInferRhoNC,
-                tcSyntaxOp, tcCheckId,
+                tcSyntaxOp, tcSyntaxOpGen, SyntaxOpType(..), synKnownType,
+                tcCheckId,
                 addExprErrCtxt,
                 getFixedTyVars ) where
 
@@ -183,15 +184,13 @@ tcExpr (HsCoreAnn src lbl expr) res_ty
         ; return (HsCoreAnn src lbl expr') }
 
 tcExpr (HsOverLit lit) res_ty
-  = do  { (_wrap,  lit') <- newExpOverloadedLit lit res_ty
-                                            (Shouldn'tHappenOrigin "HsOverLit")
-        ; MASSERT( isIdHsWrapper _wrap )
+  = do  { lit' <- newOverloadedLit lit res_ty
         ; return (HsOverLit lit') }
 
 tcExpr e@(NegApp expr neg_expr) res_ty
   = do  { (expr', neg_expr')
             <- tcSyntaxOp NegateOrigin neg_expr [SynAny] res_ty $
-               \[SynAnyOut arg_ty] ->
+               \[arg_ty] ->
                tcMonoExpr expr arg_ty
         ; return (NegApp expr' neg_expr') }
 
@@ -481,7 +480,7 @@ tcExpr (ExplicitList _ witness exprs) res_ty
       Just fln -> do { (exprs', fln')
                          <- tcSyntaxOp ListOrigin fln
                                        [SynType intTy, SynList] res_ty $
-                            \ [_SynTypeOut, SynListOut elt_ty] ->
+                            \ [elt_ty] ->
                             mapM (tc_elt (mkCheckExpType elt_ty)) exprs
 
                      ; return $ ExplicitList elt_ty (Just fln') exprs' }
@@ -1037,7 +1036,7 @@ tcArithSeq witness seq@(FromThenTo expr1 expr2 expr3) res_ty
           ArithSeq eft wit' (FromThenTo expr1' expr2' expr3') }
 
 -----------------
-arithSeqEltType :: Maybe (SyntaxExpr Name) -> TcRhoType
+arithSeqEltType :: Maybe (SyntaxExpr Name) -> ExpType
                 -> TcM (HsWrapper, TcType, Maybe (SyntaxExpr Id))
 arithSeqEltType Nothing res_ty
   = do { (coi, elt_ty) <- matchExpectedListTy res_ty
@@ -1045,7 +1044,7 @@ arithSeqEltType Nothing res_ty
 arithSeqEltType (Just fl) res_ty
   = do { (elt_ty, fl')
            <- tcSyntaxOp ListOrigin fl [SynList] res_ty $
-              \ [SynListOut elt_ty] -> return elt_ty
+              \ [elt_ty] -> return elt_ty
        ; return (idHsWrapper, elt_ty, Just fl') }
 
 {-
@@ -1209,105 +1208,159 @@ tcTupArgs args tys
                                          ; return (L l (Present expr')) }
 
 ---------------------------
--- | What to expect for an argument to a rebindable-syntax operator
-data SyntaxOpTypeIn
-  = SynAny
-  | SynList
-  | SynFun Arity
-  | SynType TcType
+-- | What to expect for an argument to a rebindable-syntax operator.
+-- Quite like 'Type', but allows for holes to be filled in by tcSyntaxOp.
+-- The callback called from tcSyntaxOp gets a list of types; the meaning
+-- of these types is determined by a left-to-right depth-first traversal
+-- of the 'SyntaxOpType' tree. So if you pass in
+--
+-- > SynAny `SynFun` (SynList `SynFun` SynType Int) `SynFun` SynAny
+--
+-- you'll get three types back: one for the first 'SynAny', the /element/
+-- type of the list, and one for the last 'SynAny'. You don't get anything
+-- for the 'SynType', because you've said positively that it should be an
+-- Int, and so it shall be.
+data SyntaxOpType
+  = SynAny     -- ^ Any type
+  | SynRho     -- ^ A rho type, deeply skolemised or instantiated as appropriate
+  | SynList    -- ^ A list type. You get back the element type of the list
+  | SynFun SyntaxOpType SyntaxOpType
+               -- ^ A function.
+  | SynType ExpType   -- ^ A known type.
+infixr 0 `SynFun`
 
--- | What we get out of 'tcSyntaxOp'
-data SyntaxOpTypeOut
-  = SynAnyOut TcType   -- always deeply skolemised
-  | SynListOut TcType  -- the element type;
-                       -- (using an ExpType here would be impredicative)
-  | SynFunOut [ExpType] ExpType
-  | SynTypeOut         -- it's already known
+-- | Like 'SynType' but accepts a regular TcType
+synKnownType :: TcType -> SyntaxOpType
+synKnownType = SynType . mkCheckExpType
 
-tcSyntaxOp :: forall a.
-              CtOrigin
+-- | Like 'mkFunTys' but for 'SyntaxOpType'
+mkSynFunTys :: [TcSigmaType] -> ExpType -> SyntaxOpType
+mkSynFunTys arg_tys res_ty = foldr SynFun (SynType res_ty) arg_tys
+
+tcSyntaxOp :: CtOrigin
            -> SyntaxExpr Name
-           -> [SyntaxOpTypeIn]
-           -> ExpType
-           -> ([SyntaxOpTypeOut] -> TcM a) -- ^ Type check any arguments
+           -> [SyntaxOpType]           -- ^ shape of syntax operator arguments
+           -> ExpType                  -- ^ overall result type
+           -> ([TcSigmaType] -> TcM a) -- ^ Type check any arguments
            -> TcM (a, SyntaxExpr TcId)
 -- ^ Typecheck a syntax operator
 -- The operator is always a variable at this stage (i.e. renamer output)
--- Returns the expected types of the arguments and the result type.
--- Make sure to check any arguments in the callback if you have any
--- SynAny or SynFun;
--- this is necessary in case evaluating
--- arguments fills in ExpTypes.
-tcSyntaxOp orig (HsVar (L _ op)) syn_tys outer_res_ty thing_inside
-  = do { (expr, rho) <- tcInferId op
-       ; (wrap, arg_tys, rho')
-           <- matchActualFunTys herald orig (length syn_tys) rho
-              -- wrap :: expr's type "->" (arg_tys -> rho')
-       ; res_wrap <- tcSubTypeHR orig noThing rho' outer_res_ty
-              -- res_wrap :: rho' "->" outer_res_ty
-       ; (result, _, full_wrap) <- tc_syn_args [] arg_tys syn_tys rho' res_wrap
-       ; return (result, mkHsWrap (full_wrap <.> wrap) expr) }
-  where
-    tc_syn_args :: [SyntaxOpTypeOut]  -- accumulator, reversed
-                -> [TcSigmaType] -> [SyntaxOpTypeIn]
-                -> TcType -> HsWrapper  -- type and wrapper of overall result
-                -> TcM (a, TcType, HsWrapper)
-    tc_syn_args out_acc [] [] res_ty res_wrap
-      = do { result <- thing_inside (reverse out_acc)
-           ; return (result, res_ty, res_wrap) }
-    tc_syn_args out_acc (exp_ty : exp_tys) (syn_ty : syn_tys)
-                        res_ty_in res_wrap_in
-      = do { (skol_wrap, (result, arg_ty, arg_wrap, res_ty, res_wrap))
-               <- tcSkolemise GenSigCtxt exp_ty $ \_ exp_ty' ->
-                  tc_syn_arg exp_ty'
+tcSyntaxOp orig expr arg_tys res_ty
+  = tcSyntaxOpGen orig expr (mkSynFunTys arg_tys res_ty)
 
-           ; let full_arg_wrap = skol_wrap <.> arg_wrap
+-- | Slightly more general version of 'tcSyntaxOp' that allows the caller
+-- to specify the full shape of the syntax operator: it need not be a bunch
+-- of arguments and then an ExpType
+tcSyntaxOpGen :: CtOrigin
+              -> SyntaxExpr Name
+              -> SyntaxOpType
+              -> ([TcSigmaType] -> TcM a)
+              -> TcM (a, SyntaxExpr TcId)
+tcSyntaxOpGen orig (HsVar (L _ op)) syn_ty thing_inside
+  = do { (expr, sigma) <- tcInferId op
+       ; (result, _, wrap) <- tcSynArgA orig sigma syn_ty $
+                              thing_inside
+       ; return (result, mkHsWrap wrap expr) }
 
-           ; return ( result
-                    , arg_ty `mkFunTy` res_ty
-                    , mkWpFun full_arg_wrap res_wrap arg_ty res_ty ) }
-      where
-        tc_syn_arg :: TcRhoType        -- deeply skolemised
-                   -> TcM ( a          -- thing_inside's result
-                          , TcType     -- type of the argument
-                          , HsWrapper  -- :: that type "->" ExpType passed in
-                          , TcType     -- result type (with some args included)
-                          , HsWrapper  -- :: (args -> res) passed in
-                                       -- "->" that result type
-                          )
-        tc_syn_arg exp_ty' = case syn_ty of
-          SynAny ->
-            do { (result, res_ty, res_ty_wrap)
-                   <- tc_syn_args (SynAnyOut exp_ty' : out_acc) exp_tys syn_tys
-                                  res_ty_in res_wrap_in
-               ; return (result, exp_ty', idHsWrapper, res_ty, res_ty_wrap) }
-          SynList ->
-            do { (list_co, elt_ty) <- matchExpectedListTy (mkCheckExpType exp_ty')
-               ; (result, res_ty, res_ty_wrap)
-                   <- tc_syn_args (SynListOut elt_ty : out_acc) exp_tys syn_tys
-                                  res_ty_in res_wrap_in
-               ; return ( result, mkListTy elt_ty, mkWpCastN list_co
-                        , res_ty, res_ty_wrap ) }
-          SynFun arity ->
-            do { (((result, res_ty, res_ty_wrap), arg_tys, inner_res_ty), wrap)
-                   <- matchExpectedFunTys herald arity (mkCheckExpType exp_ty') $
-                      \ arg_exp_tys res_exp_ty ->
-                      do { stuff <- tc_arg_tys
-                                      (SynFunOut arg_exp_tys res_exp_ty : out_acc)
-                                      exp_tys syn_tys res_ty_in res_wrap_in
-                         ; arg_tys      <- mapM readExpType arg_exp_tys
-                         ; inner_res_ty <- readExpType res_exp_ty
-                         ; return (stuff, arg_tys, inner_res_ty) }
-               ; return ( result, mkFunTys arg_tys inner_res_ty, wrap
-                        , res_ty, res_ty_wrap ) }
-          SynType ty ->
-            do { wrap <- tcSubTypeO orig GenSigCtxt ty (mkCheckExpType exp_ty')
-               ; (result, res_ty, res_ty_wrap)
-                   <- tc_syn_args (SynTypeOut : out_acc)
-                                  exp_tys syn_tys res_ty_in res_wrap_in
-               ; return (result, ty, wrap, res_ty, res_ty_wrap) }
+tcSyntaxOpGen _ other         _      = pprPanic "tcSyntaxOp" (ppr other)
 
-tcSyntaxOp _ other         _      = pprPanic "tcSyntaxOp" (ppr other)
+{-
+Note [tcSynArg]
+~~~~~~~~~~~~~~~
+Because of the rich structure of SyntaxOpType, we must do the
+contra-/covariant thing when working down arrows, to get the
+instantiation vs. skolemisation decisions correct (and, more
+obviously, the orientation of the HsWrappers). We thus have
+two tcSynArgs.
+-}
+
+-- works on "expected" types, skolemising where necessary
+-- See Note [tcSynArg]
+tcSynArgE :: CtOrigin
+          -> TcSigmaType
+          -> SyntaxOpType                -- ^ shape it is expected to have
+          -> ([TcSigmaType] -> TcM a)    -- ^ check the arguments
+          -> TcM (a, TcType, HsWrapper)
+           -- ^ returns the type of the right shape and a wrapper
+           -- (type returned) "->" (type passed in)
+tcSynArgE orig sigma_ty syn_ty thing_inside
+  = do { (skol_wrap, (result, ty_out, ty_wrapper))
+           <- tcSkolemise GenSigCtxt sigma_ty $ \ _ rho_ty ->
+           go rho_ty syn_ty
+       ; return (result, ty_out, skol_wrap <.> ty_wrapper) }
+    where
+    go rho_ty SynAny
+      = do { result <- thing_inside [rho_ty]
+           ; return (result, rho_ty, idHsWrapper) }
+
+    go rho_ty SynRho   -- same as SynAny, because we skolemise eagerly
+      = do { result <- thing_inside [rho_ty]
+           ; return (result, rho_ty, idHsWrapper) }
+
+    go rho_ty SynList
+      = do { (list_co, elt_ty) <- matchExpectedListTy rho_ty
+           ; result <- thing_inside [elt_ty]
+           ; return (result, mkListTy elt_ty, mkWpCastN list_co) }
+
+    go rho_ty (SynFun arg_shape res_shape)
+      = do { ( ( ( (result, arg_ty)
+                 , res_ty_out, res_wrapper ) -- :: res_ty_out "->" res_ty
+               , arg_ty_out, arg_wrapper )   -- :: arg_ty "->" arg_ty_out
+             , match_wrapper )  -- :: (arg_ty -> res_ty) "->" rho_ty
+               <- matchExpectedFunTys herald 1 (mkCheckExpType rho_ty) $
+                  \ [arg_ty] res_ty ->
+                  tcSynArgA (checkingExpType arg_ty) arg_shape $ \ arg_results ->
+                  tcSynArgE (checkingExpType res_ty) res_shape $ \ res_results ->
+                  do { result <- thing_inside (arg_results ++ res_results)
+                     ; return (result, arg_ty) }
+           ; return ( result, arg_ty_out `mkFunTy` res_ty_out
+                    , match_wrapper <.>
+                      mkWpFun arg_wrapper res_wrapper arg_ty res_ty_out ) }
+
+    go rho_ty (SynType the_ty)
+      = do { wrap   <- tcSubTypeHR_ExpType orig noThing the_ty rho_ty
+           ; result <- thing_inside []
+           ; return (result, the_ty, wrap) }
+
+-- works on "actual" types, instantiating where necessary
+-- See Note [tcSynArg]
+tcSynArgA :: CtOrigin
+          -> TcSigmaType
+          -> SyntaxOpType                -- ^ shape it is expected to have
+          -> ([TcSigmaType] -> TcM a)    -- ^ check the arguments
+          -> TcM (a, TcType, HsWrapper)
+           -- ^ returns the type of the right shape and a wrapper
+           -- (type passed in) "->" (type returned)
+tcSynArgA _orig sigma_ty SynAny thing_inside
+  = do { result <- thing_inside [sigma_ty]
+       ; return (result, sigma_ty, idHsWrapper) }
+tcSynArgA orig sigma_ty SynRho thing_inside
+  = do { (inst_wrap, rho_ty) <- deeplyInstantiate orig sigma_ty
+       ; result <- thing_inside [rho_ty]
+       ; return (result, rho_ty, inst_wrap) }
+tcSynArgA orig sigma_ty SynList thing_inside
+  = do { (inst_wrap, rho_ty) <- topInstantiate orig sigma_ty
+       ; (list_co, elt_ty)   <- matchExpectedListTy rho_ty
+       ; result <- thing_inside [elt_ty]
+       ; return ( result, mkListTy elt_ty
+                , mkWpCastN (mkTcSymCo list_co) <.> inst_wrap ) }
+tcSynArgA orig sigma_ty (SynFun arg_shape res_shape) thing_inside
+  = do { (match_wrapper, [arg_ty], res_ty)
+           <- matchActualFunTys herald orig 1 sigma_ty
+           -- match_wrapper :: sigma_ty "->" (arg_ty -> res_ty)
+       ; ((result, res_ty_out, res_wrapper), arg_ty_out, arg_wrapper)
+           -- arg_wrapper :: arg_ty_out "->" arg_ty
+           -- res_wrapper :: res_ty "->" res_ty_out
+           <- tcSynArgE arg_ty arg_shape $ \ arg_results ->
+              tcSynArgA res_ty res_shape $ \ res_results ->
+              thing_inside (arg_results ++ res_results)
+       ; return ( result, arg_ty_out `mkFunTy` res_ty_out
+                , mkWpFun arg_wrapper res_wrapper arg_ty_out res_ty_out
+                  <.> match_wrapper ) }
+tcSynArgA orig sigma_ty (SynType the_ty) thing_inside
+  = do { wrap   <- tcSubTypeO orig GenSigCtxt sigma_ty the_ty
+       ; result <- thing_inside []
+       ; return (result, the_ty, wrap) }
 
 {-
 Note [Push result type in]

@@ -548,7 +548,7 @@ tcMcStmt :: TcExprStmtChecker
 tcMcStmt _ (LastStmt body noret return_op) res_ty thing_inside
   = do  { (body', return_op')
             <- tcSyntaxOp MCompOrigin return_op [SynAny] res_ty $
-               \ [SynAnyOut a_ty] ->
+               \ [a_ty] ->
                tcMonoExprNC body a_ty
         ; thing      <- thing_inside (panic "tcMcStmt: thing_inside")
         ; return (LastStmt body' noret return_op', thing) }
@@ -562,8 +562,9 @@ tcMcStmt _ (LastStmt body noret return_op) res_ty thing_inside
 tcMcStmt ctxt (BindStmt pat rhs bind_op fail_op) res_ty thing_inside
            -- (>>=) :: rhs_ty -> (pat_ty -> new_res_ty) -> res_ty
 = do   { ((rhs', pat', thing, new_res_ty), bind_op')
-            <- tcSyntaxOp MCompOrigin bind_op [SynAny, SynFun 1] res_ty $
-               \ [SynAnyOut rhs_ty, SynFunOut [pat_ty] new_res_ty] ->
+            <- tcSyntaxOp MCompOrigin bind_op
+                          [SynAny, SynFun SynAny SynAny] res_ty $
+               \ [rhs_ty, pat_ty, new_res_ty] ->
                do { rhs' <- tcMonoExprNM rhs rhs_ty
                   ; (pat', thing) <- tcPat (StmtCtxt ctxt) pat pat_ty $
                                      thing_inside new_res_ty
@@ -586,10 +587,10 @@ tcMcStmt _ (BodyStmt rhs then_op guard_op _) res_ty thing_inside
           -- Where test_ty is, for example, Bool
         ; ((thing, rhs', rhs_ty, guard_op'), then_op')
             <- tcSyntaxOp MCompOrigin then_op [SynAny, SynAny] res_ty $
-               \ [SynAnyOut rhs_ty, SynAnyOut new_res_ty] ->
+               \ [rhs_ty, new_res_ty] ->
                do { (rhs', guard_op')
                       <- tcSyntaxOp MCompOrigin guard_op [SynAny] rhs_ty $
-                         \ [SynAnyOut test_ty] ->
+                         \ [test_ty] ->
                          tcMonoExpr rhs test_ty
                   ; rhs_ty <- readExpType rhs_ty
                   ; thing <- thing_inside new_res_ty
@@ -751,17 +752,20 @@ tcMcStmt ctxt (ParStmt bndr_stmts_s mzip_op bind_op) res_ty thing_inside
                         (m_ty `mkAppTy` mkBoxedTupleTy [alphaTy, betaTy])
        ; mzip_op' <- unLoc `fmap` tcPolyExpr (noLoc mzip_op) mzip_ty
 
-       ; (blocks', thing) <- loop m_ty bndr_stmts_s
+        -- type dummies since we don't know all binder types yet
+       ; id_tys_s <- (mapM . mapM) (const (newFlexiTyVarTy liftedTypeKind))
+                       [ names | ParStmtBlock _ names _ <- bndr_stmts_s ]
 
        -- Typecheck bind:
-       ; let tys      = [ mkBigCoreVarTupTy bs | ParStmtBlock _ bs _ <- blocks']
-             tuple_ty = mk_tuple_ty tys
+       ; let tup_tys  = [ mkBigCoreTupTy id_tys | id_tys <- id_tys_s ]
+             tuple_ty = mk_tuple_ty tup_tys
 
-             -- TODO (RAE): This is very broken. And I don't know how to fix.
-       ; bind_op' <- tcSyntaxOp MCompOrigin bind_op $
-                        (m_ty `mkAppTy` tuple_ty)
-                        `mkFunTy` (tuple_ty `mkFunTy` res_ty)
-                        `mkFunTy` res_ty
+       ; ((blocks', thing), bind_op')
+           <- tcSyntaxOp MCompOrigin bind_op
+                         [ SynType (m_ty `mkAppTy` tuple_ty)
+                         , SynFun (SynType tuple_ty) SynAny ] res_ty $
+              \ [inner_res_ty] ->
+              loop m_ty (mkCheckExpType inner_res_ty) tup_tys bndr_stmts_s
 
        ; return (ParStmt blocks' mzip_op' bind_op', thing) }
 
@@ -769,24 +773,29 @@ tcMcStmt ctxt (ParStmt bndr_stmts_s mzip_op bind_op) res_ty thing_inside
     mk_tuple_ty tys = foldr1 (\tn tm -> mkBoxedTupleTy [tn, tm]) tys
 
        -- loop :: Type                                  -- m_ty
-       --      -> [([LStmt Name], [Name])]
+       --      -> ExpType                               -- inner_res_ty
+       --      -> [TcType]                              -- tup_tys
+       --      -> [ParStmtBlock Name]
        --      -> TcM ([([LStmt TcId], [TcId])], thing)
-    loop _ [] = do { thing <- thing_inside res_ty
-                   ; return ([], thing) }           -- matching in the branches
+    loop _ inner_res_ty [] [] = do { thing <- thing_inside inner_res_ty
+                                   ; return ([], thing) }
+                                   -- matching in the branches
 
-    loop m_ty (ParStmtBlock stmts names return_op : pairs)
-      = do { -- type dummy since we don't know all binder types yet
-             id_tys <- mapM (const (newFlexiTyVarTy liftedTypeKind)) names
-           ; let m_tup_ty = m_ty `mkAppTy` mkBigCoreTupTy id_tys
+    loop m_ty inner_res_ty (tup_ty_in : tup_tys_in)
+                           (ParStmtBlock stmts names return_op : pairs)
+      = do { let m_tup_ty = m_ty `mkAppTy` tup_ty_in
            ; (stmts', (ids, return_op', pairs', thing))
                 <- tcStmtsAndThen ctxt tcMcStmt stmts m_tup_ty $ \m_tup_ty' ->
                    do { ids <- tcLookupLocalIds names
                       ; let tup_ty = mkBigCoreVarTupTy ids
-                      ; return_op' <- tcSyntaxOp MCompOrigin return_op
-                                          (tup_ty `mkFunTy` m_tup_ty')
-                      ; (pairs', thing) <- loop m_ty pairs
+                      ; (_, return_op') <-
+                          tcSyntaxOp MCompOrigin return_op
+                                     [SynType tup_ty] m_tup_ty' $
+                                     \ _ -> return ()
+                      ; (pairs', thing) <- loop m_ty inner_res_ty tup_tys_in pairs
                       ; return (ids, return_op', pairs', thing) }
            ; return (ParStmtBlock stmts' ids return_op' : pairs', thing) }
+    loop _ _ _ _ = panic "tcMcStmt.loop"
 
 tcMcStmt _ stmt _ _
   = pprPanic "tcMcStmt: unexpected Stmt" (ppr stmt)
@@ -811,8 +820,8 @@ tcDoStmt ctxt (BindStmt pat rhs bind_op fail_op) res_ty thing_inside
                 -- in full generality; see Trac #1537
 
           ((rhs', pat', new_res_ty, thing), bind_op')
-            <- tcSyntaxOp DoOrigin bind_op [SynAny, SynFun 1] res_ty $
-                \ [ SynAnyOut rhs_ty, SynFunOut [pat_ty] new_res_ty ] ->
+            <- tcSyntaxOp DoOrigin bind_op [SynAny, SynFun SynAny SynAny] res_ty $
+                \ [rhs_ty, pat_ty, new_res_ty] ->
                 do { rhs' <- tcMonoExprNC rhs (mkCheckExpType rhs_ty)
                    ; (pat', thing) <- tcPat (StmtCtxt ctxt) pat pat_ty $
                                       thing_inside new_res_ty
@@ -831,7 +840,7 @@ tcDoStmt ctxt (ApplicativeStmt pairs mb_join _) res_ty thing_inside
             Just join_op ->
               do { (rhs_ty, join_op')
                      <- tcSyntaxOp DoOrigin join_op [SynAny] res_ty $
-                        \ [ SynAnyOut rhs_ty ] ->
+                        \ [rhs_ty] ->
                         return (mkCheckExpType rhs_ty)
                  ; return (Just join_op', rhs_ty) }
 
@@ -847,7 +856,7 @@ tcDoStmt _ (BodyStmt rhs then_op _ _) res_ty thing_inside
         ; new_res_ty <- newFlexiTyVarTy liftedTypeKind
         ; ((rhs', rhs_ty, thing), then_op')
             <- tcSyntaxOp DoOrigin then_op [SynAny, SynAny] res_ty $
-               \ [ SynAnyOut rhs_ty, SynAnyOut new_res_ty ] ->
+               \ [rhs_ty, new_res_ty] ->
                do { rhs' <- tcMonoExprNC rhs rhs_ty
                   ; thing <- thing_inside new_res_ty
                   ; return (rhs', rhs_ty, thing) }
