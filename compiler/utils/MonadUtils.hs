@@ -201,4 +201,4 @@ whenM mb thing = do { b <- mb
 -- | Monadic version of @unless@, taking the condition in the monad
 unlessM :: Monad m => m Bool -> m () -> m ()
 unlessM condM acc = do { cond <- condM
-                       ; unless c acc }
+                       ; unless cond acc }

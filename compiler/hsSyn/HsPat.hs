@@ -197,7 +197,10 @@ data Pat id
   -- For details on above see note [Api annotations] in ApiAnnotation
   | NPlusKPat       (Located id)        -- n+k pattern
                     (Located (HsOverLit id)) -- It'll always be an HsIntegral
-                    (PostTc id (HsOverLit id)) -- See Note [NPlusK patterns] in TcPat
+                    (HsOverLit id)      -- See Note [NPlusK patterns] in TcPat
+                     -- NB: This could be (PostTc ...), but that induced a
+                     -- a new hs-boot file. Not worth it.
+
                     (SyntaxExpr id)     -- (>=) function, of type t1->t2->Bool
                     (SyntaxExpr id)     -- Name of '-' (see RnEnv.lookupSyntaxName)
 
@@ -395,7 +398,7 @@ pprPat (ParPat pat)           = parens (ppr pat)
 pprPat (LitPat s)             = ppr s
 pprPat (NPat l Nothing  _)    = ppr l
 pprPat (NPat l (Just _) _)    = char '-' <> ppr l
-pprPat (NPlusKPat n k _ _)    = hcat [ppr n, char '+', ppr k]
+pprPat (NPlusKPat n k _ _ _)  = hcat [ppr n, char '+', ppr k]
 pprPat (SplicePat splice)     = pprSplice splice
 pprPat (CoPat co pat _)       = pprHsWrapper (ppr pat) co
 pprPat (SigPatIn pat ty)      = ppr pat <+> dcolon <+> ppr ty

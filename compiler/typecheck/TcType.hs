@@ -24,6 +24,10 @@ module TcType (
   TcTyVar, TcTyVarSet, TcDTyVarSet, TcTyCoVarSet, TcDTyCoVarSet,
   TcKind, TcCoVar, TcTyCoVar, TcTyBinder,
 
+  ExpType(..), ExpSigmaType, ExpRhoType, mkCheckExpType,
+
+  SyntaxOpType(..), synKnownType, mkSynFunTys,
+
   -- TcLevel
   TcLevel(..), topTcLevel, pushTcLevel, isTopTcLevel,
   strictlyDeeperThan, sameDepthAs, fmvTcLevel,
@@ -69,7 +73,7 @@ module TcType (
   -- Again, newtypes are opaque
   eqType, eqTypes, cmpType, cmpTypes, eqTypeX,
   pickyEqType, tcEqType, tcEqKind, tcEqTypeNoKindCheck, tcEqTypeVis,
-  isSigmaTy, isRhoTy, isOverloadedTy,
+  isSigmaTy, isRhoTy, isRhoExpTy, isOverloadedTy,
   isFloatingTy, isDoubleTy, isFloatTy, isIntTy, isWordTy, isStringTy,
   isIntegerTy, isBoolTy, isUnitTy, isCharTy,
   isTauTy, isTauTyCon, tcIsTyVarTy, tcIsForAllTy,
@@ -273,6 +277,57 @@ type TcTyVarSet     = TyVarSet
 type TcTyCoVarSet   = TyCoVarSet
 type TcDTyVarSet    = DTyVarSet
 type TcDTyCoVarSet  = DTyCoVarSet
+
+-- | An expected type to check against during type-checking.
+-- See Note [ExpType] in TcMType, where you'll also find manipulators.
+data ExpType = Check TcType
+             | Infer Unique  -- ^ for debugging only
+                     Kind
+                     (IORef (Maybe TcType))
+
+type ExpSigmaType = ExpType
+type ExpRhoType   = ExpType
+
+instance Outputable ExpType where
+  ppr (Check ty) = ppr ty
+  ppr (Infer u ki _)
+    = parens (text "Infer" <> braces (ppr u) <+> dcolon <+> ppr ki)
+
+-- | Make an 'ExpType' suitable for checking.
+mkCheckExpType :: TcType -> ExpType
+mkCheckExpType = Check
+
+-- | What to expect for an argument to a rebindable-syntax operator.
+-- Quite like 'Type', but allows for holes to be filled in by tcSyntaxOp.
+-- The callback called from tcSyntaxOp gets a list of types; the meaning
+-- of these types is determined by a left-to-right depth-first traversal
+-- of the 'SyntaxOpType' tree. So if you pass in
+--
+-- > SynAny `SynFun` (SynList `SynFun` SynType Int) `SynFun` SynAny
+--
+-- you'll get three types back: one for the first 'SynAny', the /element/
+-- type of the list, and one for the last 'SynAny'. You don't get anything
+-- for the 'SynType', because you've said positively that it should be an
+-- Int, and so it shall be.
+--
+-- This is defined here to avoid defining it in TcExpr.hs-boot.
+data SyntaxOpType
+  = SynAny     -- ^ Any type
+  | SynRho     -- ^ A rho type, deeply skolemised or instantiated as appropriate
+  | SynList    -- ^ A list type. You get back the element type of the list
+  | SynFun SyntaxOpType SyntaxOpType
+               -- ^ A function.
+  | SynType ExpType   -- ^ A known type.
+infixr 0 `SynFun`
+
+-- | Like 'SynType' but accepts a regular TcType
+synKnownType :: TcType -> SyntaxOpType
+synKnownType = SynType . mkCheckExpType
+
+-- | Like 'mkFunTys' but for 'SyntaxOpType'
+mkSynFunTys :: [SyntaxOpType] -> ExpType -> SyntaxOpType
+mkSynFunTys arg_tys res_ty = foldr SynFun (SynType res_ty) arg_tys
+
 
 {-
 Note [TcRhoType]
@@ -1808,6 +1863,11 @@ isRhoTy ty | Just ty' <- coreView ty = isRhoTy ty'
 isRhoTy (ForAllTy (Named {}) _) = False
 isRhoTy (ForAllTy (Anon a) r)   = not (isPredTy a) && isRhoTy r
 isRhoTy _                       = True
+
+-- | Like 'isRhoTy', but also says 'True' for 'Infer' types
+isRhoExpTy :: ExpType -> Bool
+isRhoExpTy (Check ty) = isRhoTy ty
+isRhoExpTy (Infer {}) = True
 
 isOverloadedTy :: Type -> Bool
 -- Yes for a type of a function that might require evidence-passing

@@ -92,7 +92,7 @@ hsPatType (ConPatOut { pat_con = L _ con, pat_arg_tys = tys })
                                       = conLikeResTy con tys
 hsPatType (SigPatOut _ ty)            = ty
 hsPatType (NPat (L _ lit) _ _)        = overLitType lit
-hsPatType (NPlusKPat id _ _ _)        = idType (unLoc id)
+hsPatType (NPlusKPat id _ _ _ _)      = idType (unLoc id)
 hsPatType (CoPat _ _ ty)              = ty
 hsPatType p                           = pprPanic "hsPatType" (ppr p)
 
@@ -1107,13 +1107,14 @@ zonk_pat env (NPat (L l lit) mb_neg eq_expr)
         ; eq_expr' <- zonkExpr env eq_expr
         ; return (env, NPat (L l lit') mb_neg' eq_expr') }
 
-zonk_pat env (NPlusKPat (L loc n) (L l lit) e1 e2)
+zonk_pat env (NPlusKPat (L loc n) (L l lit1) lit2 e1 e2)
   = do  { n' <- zonkIdBndr env n
-        ; lit' <- zonkOverLit env lit
+        ; lit1' <- zonkOverLit env lit1
+        ; lit2' <- zonkOverLit env lit2
         ; e1' <- zonkExpr env e1
         ; e2' <- zonkExpr env e2
         ; return (extendIdZonkEnv1 env n',
-                  NPlusKPat (L loc n') (L l lit') e1' e2') }
+                  NPlusKPat (L loc n') (L l lit1') lit2' e1' e2') }
 
 zonk_pat env (CoPat co_fn pat ty)
   = do { (env', co_fn') <- zonkCoFn env co_fn

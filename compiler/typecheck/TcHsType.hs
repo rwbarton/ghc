@@ -2009,7 +2009,7 @@ tcHsPatSigType ctxt sig_ty
 
 tcPatSig :: Bool                    -- True <=> pattern binding
          -> LHsSigWcType Name
-         -> TcSigmaType
+         -> ExpSigmaType
          -> TcM (TcType,            -- The type to use for "inside" the signature
                  [TcTyVar],         -- The new bit of type environment, binding
                                     -- the scoped type variables
@@ -2025,7 +2025,7 @@ tcPatSig in_pat_bind sig res_ty
         ; if null sig_tvs then do {
                 -- Just do the subsumption check and return
                   wrap <- addErrCtxtM (mk_msg sig_ty) $
-                          tcSubType_NC PatSigCtxt res_ty sig_ty
+                          tcSubTypeET_NC PatSigCtxt res_ty sig_ty
                 ; return (sig_ty, [], sig_wcs, wrap)
         } else do
                 -- Type signature binds at least one scoped type variable
@@ -2048,7 +2048,7 @@ tcPatSig in_pat_bind sig res_ty
 
         -- Now do a subsumption check of the pattern signature against res_ty
         ; wrap <- addErrCtxtM (mk_msg sig_ty) $
-                  tcSubType_NC PatSigCtxt res_ty sig_ty
+                  tcSubTypeET_NC PatSigCtxt res_ty sig_ty
 
         -- Phew!
         ; return (sig_ty, sig_tvs, sig_wcs, wrap)
@@ -2056,6 +2056,7 @@ tcPatSig in_pat_bind sig res_ty
   where
     mk_msg sig_ty tidy_env
        = do { (tidy_env, sig_ty) <- zonkTidyTcType tidy_env sig_ty
+            ; res_ty <- readExpType res_ty   -- should be filled in by now
             ; (tidy_env, res_ty) <- zonkTidyTcType tidy_env res_ty
             ; let msg = vcat [ hang (ptext (sLit "When checking that the pattern signature:"))
                                   4 (ppr sig_ty)

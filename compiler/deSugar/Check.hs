@@ -294,11 +294,12 @@ translatePat pat = case pat of
         return [xp,g]
 
   -- (n + k)  ===>   x (True <- x >= k) (n <- x-k)
-  NPlusKPat (L _ n) k ge minus -> do
+  NPlusKPat (L _ n) k1 k2 ge minus -> do
     (xp, xe) <- mkPmId2FormsSM (idType n)
-    let ke = L (getLoc k) (HsOverLit (unLoc k))
-        g1 = mkGuard [truePattern] (OpApp xe (noLoc ge)    no_fixity ke)
-        g2 = mkGuard [PmVar n]     (OpApp xe (noLoc minus) no_fixity ke)
+    let ke1 = L (getLoc k1) (HsOverLit (unLoc k1))
+        ke2 = L (getLoc k1) (HsOverLit k2)
+        g1 = mkGuard [truePattern] (OpApp xe (noLoc ge)    no_fixity ke1)
+        g2 = mkGuard [PmVar n]     (OpApp xe (noLoc minus) no_fixity ke2)
     return [xp, g1, g2]
 
   -- (fun -> pat)   ===>   x (pat <- fun x)

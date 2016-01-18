@@ -14,7 +14,7 @@ module Inst (
        instCall, instDFunType, instStupidTheta,
        newWanted, newWanteds,
 
-       newExpOverloadedLit, newOverloadedLit, mkOverLit,
+       newOverloadedLit, mkOverLit,
 
        newClsInst,
        tcGetInsts, tcGetInstEnvs, getOverlapFlag,
@@ -345,7 +345,7 @@ newOverloadedLit :: HsOverLit Name
                  -> ExpRhoType
                  -> TcM (HsOverLit TcId)
 newOverloadedLit
-  lit@(OverLit { ol_val = val, ol_rebindable = rebindable }) res_ty res_orig
+  lit@(OverLit { ol_val = val, ol_rebindable = rebindable }) res_ty
   | not rebindable
     -- all built-in overloaded lits are tau-types, so we can just
     -- tauify the ExpType
@@ -356,10 +356,10 @@ newOverloadedLit
         -- Reason: If we do, tcSimplify will call lookupInst, which
         --         will call tcSyntaxName, which does unification,
         --         which tcSimplify doesn't like
-           Just expr -> return (lit { ol_witness = expr, ol_type = insted_ty
+           Just expr -> return (lit { ol_witness = expr, ol_type = res_ty
                                     , ol_rebindable = False })
            Nothing   -> newNonTrivialOverloadedLit orig lit
-                                                   (mkCheckExpType insted_ty) }
+                                                   (mkCheckExpType res_ty) }
 
   | otherwise
   = newNonTrivialOverloadedLit orig lit res_ty
@@ -377,7 +377,7 @@ newNonTrivialOverloadedLit orig
                , ol_rebindable = rebindable }) res_ty
   = do  { hs_lit <- mkOverLit val
         ; let lit_ty = hsLitType hs_lit
-        ; (_, fi') <- tcSyntaxOp orig meth_name [SynType lit_ty] res_ty $
+        ; (_, fi') <- tcSyntaxOp orig meth_name [synKnownType lit_ty] res_ty $
                       \_ -> return ()
         ; let witness = HsApp (noLoc fi') (nlHsLit hs_lit)
         ; res_ty <- readExpType res_ty

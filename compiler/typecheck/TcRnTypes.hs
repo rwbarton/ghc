@@ -755,9 +755,15 @@ data TcIdBinder
        TopLevelFlag    -- Tells whether the bindind is syntactically top-level
                        -- (The monomorphic Ids for a recursive group count
                        --  as not-top-level for this purpose.)
+  | TcIdBndr_ExpType  -- Variant that allows the type to be specified as
+                      -- an ExpType
+       Name
+       ExpType
+       TopLevelFlag
 
 instance Outputable TcIdBinder where
-   ppr (TcIdBndr id top_lvl) = ppr id <> brackets (ppr top_lvl)
+   ppr (TcIdBndr id top_lvl)           = ppr id <> brackets (ppr top_lvl)
+   ppr (TcIdBndr_ExpType id _ top_lvl) = ppr id <> brackets (ppr top_lvl)
 
 ---------------------------
 -- Template Haskell stages and levels
@@ -2484,7 +2490,7 @@ pushErrCtxtSameOrigin err loc@(CtLoc { ctl_env = lcl })
 --   b) an implication constraint is generated
 data SkolemInfo
   = SigSkol UserTypeCtxt        -- A skolem that is created by instantiating
-            Type                -- a programmer-supplied type signature
+            ExpType             -- a programmer-supplied type signature
                                 -- Location of the binding site is on the TyVar
 
   | ClsSkol Class       -- Bound at a class decl
@@ -2556,7 +2562,7 @@ pprSkolInfo (UnifyForAllSkol ty) = ptext (sLit "the type") <+> ppr ty
 -- For Insts, these cases should not happen
 pprSkolInfo UnkSkol = WARN( True, text "pprSkolInfo: UnkSkol" ) ptext (sLit "UnkSkol")
 
-pprSigSkolInfo :: UserTypeCtxt -> Type -> SDoc
+pprSigSkolInfo :: UserTypeCtxt -> ExpType -> SDoc
 pprSigSkolInfo ctxt ty
   = case ctxt of
        FunSigCtxt f _ -> pp_sig f

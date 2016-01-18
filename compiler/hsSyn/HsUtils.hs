@@ -253,7 +253,7 @@ mkHsIf :: LHsExpr id -> LHsExpr id -> LHsExpr id -> HsExpr id
 mkHsIf c a b = HsIf (Just noSyntaxExpr) c a b
 
 mkNPat lit neg     = NPat lit neg noSyntaxExpr
-mkNPlusKPat id lit = NPlusKPat id lit noSyntaxExpr noSyntaxExpr
+mkNPlusKPat id lit = NPlusKPat id lit (unLoc lit) noSyntaxExpr noSyntaxExpr
 
 mkTransformStmt    :: [ExprLStmt idL] -> LHsExpr idR
                    -> StmtLR idL idR (LHsExpr idL)
@@ -836,7 +836,7 @@ collect_lpat (L _ pat) bndrs
         -- See Note [Dictionary binders in ConPatOut]
     go (LitPat _)                 = bndrs
     go (NPat _ _ _)               = bndrs
-    go (NPlusKPat (L _ n) _ _ _)  = n : bndrs
+    go (NPlusKPat (L _ n) _ _ _ _)= n : bndrs
 
     go (SigPatIn pat _)           = collect_lpat pat bndrs
     go (SigPatOut pat _)          = collect_lpat pat bndrs

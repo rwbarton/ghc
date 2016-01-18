@@ -118,6 +118,7 @@ import GHC.Desugar      ( AnnotationWrapper(..) )
 
 import qualified Data.IntSet as IntSet
 import Control.Exception
+import Control.Monad
 import Data.Binary
 import Data.Binary.Get
 import qualified Data.ByteString as B
@@ -174,7 +175,7 @@ tcTypedBracket brack@(TExpBr expr) res_ty
                                 tcInferRhoNC expr
                                 -- NC for no context; tcBracket does that
 
-       ; (meta_ty, expr_ty) <- tcTExpTy expr_ty
+       ; meta_ty <- tcTExpTy expr_ty
        ; ps' <- readMutVar ps_ref
        ; texpco <- tcLookupId unsafeTExpCoerceName
        ; tcWrapResultO (Shouldn'tHappenOrigin "TExpBr")
@@ -217,14 +218,13 @@ tcPendingSplice (PendingRnSplice flavour splice_name expr)
                        UntypedDeclSplice -> decsQTyConName
 
 ---------------
--- Takes an expected type and returns the type Q (TExp tau), and tau itself
-tcTExpTy :: ExpRhoType -> TcM (TcType, TcType)
+-- Takes a tau and returns the type Q (TExp tau)
+tcTExpTy :: TcType -> TcM TcType
 tcTExpTy exp_ty
-  = do { exp_ty <- expTypeToType exp_ty
-       ; unless (isTauTy exp_ty) $ addErr (err_msg exp_ty)
+  = do { unless (isTauTy exp_ty) $ addErr (err_msg exp_ty)
        ; q    <- tcLookupTyCon qTyConName
        ; texp <- tcLookupTyCon tExpTyConName
-       ; return (mkTyConApp q [mkTyConApp texp [exp_ty]], exp_ty) }
+       ; return (mkTyConApp q [mkTyConApp texp [exp_ty]]) }
   where
     err_msg ty
       = vcat [ text "Illegal polytype:" <+> ppr ty
@@ -456,7 +456,8 @@ tcNestedSplice :: ThStage -> PendingStuff -> Name
     -- See Note [How brackets and nested splices are handled]
     -- A splice inside brackets
 tcNestedSplice pop_stage (TcPending ps_var lie_var) splice_name expr res_ty
-  = do { (meta_exp_ty, res_ty) <- tcTExpTy res_ty
+  = do { res_ty <- expTypeToType res_ty
+       ; meta_exp_ty <- tcTExpTy res_ty
        ; expr' <- setStage pop_stage $
                   setConstraintVar lie_var $
                   tcMonoExpr expr (mkCheckExpType meta_exp_ty)
@@ -475,7 +476,8 @@ tcTopSplice :: LHsExpr Name -> ExpRhoType -> TcM (HsExpr Id)
 tcTopSplice expr res_ty
   = do { -- Typecheck the expression,
          -- making sure it has type Q (T res_ty)
-         (meta_exp_ty, res_ty) <- tcTExpTy res_ty
+         res_ty <- expTypeToType res_ty
+       ; meta_exp_ty <- tcTExpTy res_ty
        ; zonked_q_expr <- tcTopSpliceExpr Typed $
                           tcMonoExpr expr (mkCheckExpType meta_exp_ty)
 
@@ -491,7 +493,7 @@ tcTopSplice expr res_ty
          -- These steps should never fail; this is a *typed* splice
        ; addErrCtxt (spliceResultDoc expr) $ do
        { (exp3, _fvs) <- rnLExpr expr2
-       ; exp4 <- tcMonoExpr exp3 (mkCheckingExpType res_ty)
+       ; exp4 <- tcMonoExpr exp3 (mkCheckExpType res_ty)
        ; return (unLoc exp4) } }
 
 {-

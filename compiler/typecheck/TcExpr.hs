@@ -83,16 +83,18 @@ import qualified Data.Set as Set
 ************************************************************************
 -}
 
-tcPolyExpr :: LHsExpr Name        -- Expression to type check
-           -> TcSigmaType         -- Expected type (could be a polytype)
-           -> TcM (LHsExpr TcId)  -- Generalised expr with expected type
+tcPolyExpr, tcPolyExprNC
+  :: LHsExpr Name        -- Expression to type check
+  -> TcSigmaType         -- Expected type (could be a polytype)
+  -> TcM (LHsExpr TcId)  -- Generalised expr with expected type
 
 -- tcPolyExpr is a convenient place (frequent but not too frequent)
 -- place to add context information.
 -- The NC version does not do so, usually because the caller wants
 -- to do so himself.
 
-tcPolyExpr expr res_ty = tc_poly_expr expr (mkCheckExpType res_ty)
+tcPolyExpr   expr res_ty = tc_poly_expr expr (mkCheckExpType res_ty)
+tcPolyExprNC expr res_ty = tc_poly_expr_nc expr (mkCheckExpType res_ty)
 
 -- these versions take an ExpType
 tc_poly_expr, tc_poly_expr_nc :: LHsExpr Name -> ExpSigmaType -> TcM (LHsExpr TcId)
@@ -103,7 +105,7 @@ tc_poly_expr expr res_ty
 tc_poly_expr_nc (L loc expr) res_ty
   = do { traceTc "tcPolyExprNC" (ppr res_ty)
        ; (wrap, expr')
-           <- tcSkolemise GenSigCtxt res_ty $ \ _ res_ty ->
+           <- tcSkolemiseET GenSigCtxt res_ty $ \ res_ty ->
               setSrcSpan loc $
                 -- NB: setSrcSpan *after* skolemising, so we get better
                 -- skolem locations
@@ -187,11 +189,11 @@ tcExpr (HsOverLit lit) res_ty
   = do  { lit' <- newOverloadedLit lit res_ty
         ; return (HsOverLit lit') }
 
-tcExpr e@(NegApp expr neg_expr) res_ty
+tcExpr (NegApp expr neg_expr) res_ty
   = do  { (expr', neg_expr')
             <- tcSyntaxOp NegateOrigin neg_expr [SynAny] res_ty $
                \[arg_ty] ->
-               tcMonoExpr expr arg_ty
+               tcMonoExpr expr (mkCheckExpType arg_ty)
         ; return (NegApp expr' neg_expr') }
 
 tcExpr e@(HsIPVar x) res_ty
@@ -438,6 +440,7 @@ tcExpr expr@(ExplicitTuple tup_args boxity) res_ty
   | all tupArgPresent tup_args
   = do { let arity  = length tup_args
              tup_tc = tupleTyCon boxity arity
+       ; res_ty <- expTypeToType res_ty
        ; (coi, arg_tys) <- matchExpectedTyConApp tup_tc res_ty
                            -- Unboxed tuples have levity vars, which we
                            -- don't care about here
@@ -469,27 +472,31 @@ tcExpr expr@(ExplicitTuple tup_args boxity) res_ty
 
 tcExpr (ExplicitList _ witness exprs) res_ty
   = case witness of
-      Nothing   -> do  { (coi, elt_ty) <- matchExpectedListTy res_ty
+      Nothing   -> do  { res_ty <- expTypeToType res_ty
+                       ; (coi, elt_ty) <- matchExpectedListTy res_ty
                        ; exprs' <- mapM (tc_elt elt_ty) exprs
                        ; return $
                          mkHsWrapCo coi $ ExplicitList elt_ty Nothing exprs' }
 
-      Just fln -> do { (exprs', fln')
+      Just fln -> do { ((exprs', elt_ty), fln')
                          <- tcSyntaxOp ListOrigin fln
-                                       [SynType intTy, SynList] res_ty $
+                                       [synKnownType intTy, SynList] res_ty $
                             \ [elt_ty] ->
-                            mapM (tc_elt (mkCheckExpType elt_ty)) exprs
+                            do { exprs' <-
+                                    mapM (tc_elt elt_ty) exprs
+                               ; return (exprs', elt_ty) }
 
                      ; return $ ExplicitList elt_ty (Just fln') exprs' }
-     where tc_elt elt_ty expr = tc_poly_expr expr elt_ty
+     where tc_elt elt_ty expr = tcPolyExpr expr elt_ty
 
 tcExpr (ExplicitPArr _ exprs) res_ty    -- maybe empty
-  = do  { (coi, elt_ty) <- matchExpectedPArrTy res_ty
+  = do  { res_ty <- expTypeToType res_ty
+        ; (coi, elt_ty) <- matchExpectedPArrTy res_ty
         ; exprs' <- mapM (tc_elt elt_ty) exprs
         ; return $
           mkHsWrapCo coi $ ExplicitPArr elt_ty exprs' }
   where
-    tc_elt elt_ty expr = tc_poly_expr expr elt_ty
+    tc_elt elt_ty expr = tcPolyExpr expr elt_ty
 
 {-
 ************************************************************************
@@ -524,10 +531,10 @@ tcExpr (HsCase scrut matches) res_ty
                       mc_body = tcBody }
 
 tcExpr (HsIf Nothing pred b1 b2) res_ty    -- Ordinary 'if'
-  = do { pred' <- tcMonoExpr pred boolTy
+  = do { pred' <- tcMonoExpr pred (mkCheckExpType boolTy)
             -- this forces the branches to be fully instantiated
             -- (See #10619)
-       ; res_ty <- toMonoExpType res_ty
+       ; res_ty <- mkCheckExpType <$> expTypeToType res_ty
        ; b1' <- tcMonoExpr b1 res_ty
        ; b2' <- tcMonoExpr b2 res_ty
        ; return (HsIf Nothing pred' b1' b2') }
@@ -557,12 +564,13 @@ tcExpr (HsProc pat cmd) res_ty
 
 tcExpr (HsStatic expr) res_ty
   = do  { staticPtrTyCon  <- tcLookupTyCon staticPtrTyConName
+        ; res_ty          <- expTypeToType res_ty
         ; (co, [expr_ty]) <- matchExpectedTyConApp staticPtrTyCon res_ty
         ; (expr', lie)    <- captureConstraints $
             addErrCtxt (hang (ptext (sLit "In the body of a static form:"))
                              2 (ppr expr)
                        ) $
-            tc_poly_expr_nc expr expr_ty
+            tcPolyExprNC expr expr_ty
         -- Require the type of the argument to be Typeable.
         -- The evidence is not used, but asking the constraint ensures that
         -- the current implementation is as restrictive as future versions
@@ -932,9 +940,10 @@ tcExpr (ArithSeq _ witness seq) res_ty
   = tcArithSeq witness seq res_ty
 
 tcExpr (PArrSeq _ seq@(FromTo expr1 expr2)) res_ty
-  = do  { (coi, elt_ty) <- matchExpectedPArrTy res_ty
-        ; expr1' <- tc_poly_expr expr1 elt_ty
-        ; expr2' <- tc_poly_expr expr2 elt_ty
+  = do  { res_ty <- expTypeToType res_ty
+        ; (coi, elt_ty) <- matchExpectedPArrTy res_ty
+        ; expr1' <- tcPolyExpr expr1 elt_ty
+        ; expr2' <- tcPolyExpr expr2 elt_ty
         ; enumFromToP <- initDsTc $ dsDPHBuiltin enumFromToPVar
         ; enum_from_to <- newMethodFromName (PArrSeqOrigin seq)
                                  (idName enumFromToP) elt_ty
@@ -942,10 +951,11 @@ tcExpr (PArrSeq _ seq@(FromTo expr1 expr2)) res_ty
           mkHsWrapCo coi $ PArrSeq enum_from_to (FromTo expr1' expr2') }
 
 tcExpr (PArrSeq _ seq@(FromThenTo expr1 expr2 expr3)) res_ty
-  = do  { (coi, elt_ty) <- matchExpectedPArrTy res_ty
-        ; expr1' <- tc_poly_expr expr1 elt_ty
-        ; expr2' <- tc_poly_expr expr2 elt_ty
-        ; expr3' <- tc_poly_expr expr3 elt_ty
+  = do  { res_ty <- expTypeToType res_ty
+        ; (coi, elt_ty) <- matchExpectedPArrTy res_ty
+        ; expr1' <- tcPolyExpr expr1 elt_ty
+        ; expr2' <- tcPolyExpr expr2 elt_ty
+        ; expr3' <- tcPolyExpr expr3 elt_ty
         ; enumFromThenToP <- initDsTc $ dsDPHBuiltin enumFromThenToPVar
         ; eft <- newMethodFromName (PArrSeqOrigin seq)
                       (idName enumFromThenToP) elt_ty        -- !!!FIXME: chak
@@ -993,12 +1003,12 @@ tcExpr other _ = pprPanic "tcMonoExpr" (ppr other)
 ************************************************************************
 -}
 
-tcArithSeq :: Maybe (SyntaxExpr Name) -> ArithSeqInfo Name -> TcRhoType
+tcArithSeq :: Maybe (SyntaxExpr Name) -> ArithSeqInfo Name -> ExpRhoType
            -> TcM (HsExpr TcId)
 
 tcArithSeq witness seq@(From expr) res_ty
   = do { (wrap, elt_ty, wit') <- arithSeqEltType witness res_ty
-       ; expr' <- tc_poly_expr expr elt_ty
+       ; expr' <- tcPolyExpr expr elt_ty
        ; enum_from <- newMethodFromName (ArithSeqOrigin seq)
                               enumFromName elt_ty
        ; return $ mkHsWrap wrap $
@@ -1006,8 +1016,8 @@ tcArithSeq witness seq@(From expr) res_ty
 
 tcArithSeq witness seq@(FromThen expr1 expr2) res_ty
   = do { (wrap, elt_ty, wit') <- arithSeqEltType witness res_ty
-       ; expr1' <- tc_poly_expr expr1 elt_ty
-       ; expr2' <- tc_poly_expr expr2 elt_ty
+       ; expr1' <- tcPolyExpr expr1 elt_ty
+       ; expr2' <- tcPolyExpr expr2 elt_ty
        ; enum_from_then <- newMethodFromName (ArithSeqOrigin seq)
                               enumFromThenName elt_ty
        ; return $ mkHsWrap wrap $
@@ -1015,8 +1025,8 @@ tcArithSeq witness seq@(FromThen expr1 expr2) res_ty
 
 tcArithSeq witness seq@(FromTo expr1 expr2) res_ty
   = do { (wrap, elt_ty, wit') <- arithSeqEltType witness res_ty
-       ; expr1' <- tc_poly_expr expr1 elt_ty
-       ; expr2' <- tc_poly_expr expr2 elt_ty
+       ; expr1' <- tcPolyExpr expr1 elt_ty
+       ; expr2' <- tcPolyExpr expr2 elt_ty
        ; enum_from_to <- newMethodFromName (ArithSeqOrigin seq)
                               enumFromToName elt_ty
        ; return $ mkHsWrap wrap $
@@ -1024,9 +1034,9 @@ tcArithSeq witness seq@(FromTo expr1 expr2) res_ty
 
 tcArithSeq witness seq@(FromThenTo expr1 expr2 expr3) res_ty
   = do { (wrap, elt_ty, wit') <- arithSeqEltType witness res_ty
-        ; expr1' <- tc_poly_expr expr1 elt_ty
-        ; expr2' <- tc_poly_expr expr2 elt_ty
-        ; expr3' <- tc_poly_expr expr3 elt_ty
+        ; expr1' <- tcPolyExpr expr1 elt_ty
+        ; expr2' <- tcPolyExpr expr2 elt_ty
+        ; expr3' <- tcPolyExpr expr3 elt_ty
         ; eft <- newMethodFromName (ArithSeqOrigin seq)
                               enumFromThenToName elt_ty
         ; return $ mkHsWrap wrap $
@@ -1036,7 +1046,8 @@ tcArithSeq witness seq@(FromThenTo expr1 expr2 expr3) res_ty
 arithSeqEltType :: Maybe (SyntaxExpr Name) -> ExpRhoType
                 -> TcM (HsWrapper, TcType, Maybe (SyntaxExpr Id))
 arithSeqEltType Nothing res_ty
-  = do { (coi, elt_ty) <- matchExpectedListTy res_ty
+  = do { res_ty <- expTypeToType res_ty
+       ; (coi, elt_ty) <- matchExpectedListTy res_ty
        ; return (mkWpCastN coi, elt_ty, Nothing) }
 arithSeqEltType (Just fl) res_ty
   = do { (elt_ty, fl')
@@ -1194,8 +1205,8 @@ tcArg :: LHsExpr Name                    -- The function (for error messages)
       -> TcRhoType                       -- expected arg type
       -> Int                             -- # of arugment
       -> TcM (LHsExpr TcId)             -- Resulting argument
-tcArg fun arg ty arg_no = addErrCtxt (funAppCtxt fun arg arg_no)
-                          (tcPolyExprNC arg ty)
+tcArg fun arg ty arg_no = addErrCtxt (funAppCtxt fun arg arg_no) $
+                          tcPolyExprNC arg ty
 
 ----------------
 tcTupArgs :: [LHsTupArg Name] -> [TcSigmaType] -> TcM [LHsTupArg TcId]
@@ -1203,39 +1214,11 @@ tcTupArgs args tys
   = ASSERT( equalLength args tys ) mapM go (args `zip` tys)
   where
     go (L l (Missing {}),   arg_ty) = return (L l (Missing arg_ty))
-    go (L l (Present expr), arg_ty) = do { expr' <- tc_poly_expr expr arg_ty
+    go (L l (Present expr), arg_ty) = do { expr' <- tcPolyExpr expr arg_ty
                                          ; return (L l (Present expr')) }
 
 ---------------------------
--- | What to expect for an argument to a rebindable-syntax operator.
--- Quite like 'Type', but allows for holes to be filled in by tcSyntaxOp.
--- The callback called from tcSyntaxOp gets a list of types; the meaning
--- of these types is determined by a left-to-right depth-first traversal
--- of the 'SyntaxOpType' tree. So if you pass in
---
--- > SynAny `SynFun` (SynList `SynFun` SynType Int) `SynFun` SynAny
---
--- you'll get three types back: one for the first 'SynAny', the /element/
--- type of the list, and one for the last 'SynAny'. You don't get anything
--- for the 'SynType', because you've said positively that it should be an
--- Int, and so it shall be.
-data SyntaxOpType
-  = SynAny     -- ^ Any type
-  | SynRho     -- ^ A rho type, deeply skolemised or instantiated as appropriate
-  | SynList    -- ^ A list type. You get back the element type of the list
-  | SynFun SyntaxOpType SyntaxOpType
-               -- ^ A function.
-  | SynType ExpType   -- ^ A known type.
-infixr 0 `SynFun`
-
--- | Like 'SynType' but accepts a regular TcType
-synKnownType :: TcType -> SyntaxOpType
-synKnownType = SynType . mkCheckExpType
-
--- | Like 'mkFunTys' but for 'SyntaxOpType'
-mkSynFunTys :: [TcSigmaType] -> ExpType -> SyntaxOpType
-mkSynFunTys arg_tys res_ty = foldr SynFun (SynType res_ty) arg_tys
-
+-- See TcType.SyntaxOpType also for commentary
 tcSyntaxOp :: CtOrigin
            -> SyntaxExpr Name
            -> [SyntaxOpType]           -- ^ shape of syntax operator arguments
@@ -1261,7 +1244,7 @@ tcSyntaxOpGen orig (HsVar (L _ op)) syn_ty thing_inside
                               thing_inside
        ; return (result, mkHsWrap wrap expr) }
 
-tcSyntaxOpGen _ other         _      = pprPanic "tcSyntaxOp" (ppr other)
+tcSyntaxOpGen _ other _ _ = pprPanic "tcSyntaxOp" (ppr other)
 
 {-
 Note [tcSynArg]
@@ -1308,16 +1291,22 @@ tcSynArgE orig sigma_ty syn_ty thing_inside
              , match_wrapper )  -- :: (arg_ty -> res_ty) "->" rho_ty
                <- matchExpectedFunTys herald 1 (mkCheckExpType rho_ty) $
                   \ [arg_ty] res_ty ->
-                  tcSynArgA (checkingExpType arg_ty) arg_shape $ \ arg_results ->
-                  tcSynArgE (checkingExpType res_ty) res_shape $ \ res_results ->
+                  let arg_tc_ty = checkingExpType arg_ty in
+                  tcSynArgA orig arg_tc_ty arg_shape $
+                  \ arg_results ->
+                  tcSynArgE orig (checkingExpType res_ty) res_shape $
+                  \ res_results ->
                   do { result <- thing_inside (arg_results ++ res_results)
-                     ; return (result, arg_ty) }
+                     ; return (result, arg_tc_ty) }
            ; return ( result, arg_ty_out `mkFunTy` res_ty_out
                     , match_wrapper <.>
                       mkWpFun arg_wrapper res_wrapper arg_ty res_ty_out ) }
+      where
+        herald = text "This rebindable syntax expects a function with"
 
     go rho_ty (SynType the_ty)
-      = do { wrap   <- tcSubTypeET orig noThing the_ty rho_ty
+      = do { wrap   <- tcSubTypeET orig the_ty rho_ty
+           ; the_ty <- readExpType the_ty
            ; result <- thing_inside []
            ; return (result, the_ty, wrap) }
 
@@ -1350,14 +1339,18 @@ tcSynArgA orig sigma_ty (SynFun arg_shape res_shape) thing_inside
        ; ((result, res_ty_out, res_wrapper), arg_ty_out, arg_wrapper)
            -- arg_wrapper :: arg_ty_out "->" arg_ty
            -- res_wrapper :: res_ty "->" res_ty_out
-           <- tcSynArgE arg_ty arg_shape $ \ arg_results ->
-              tcSynArgA res_ty res_shape $ \ res_results ->
+           <- tcSynArgE orig arg_ty arg_shape $ \ arg_results ->
+              tcSynArgA orig res_ty res_shape $ \ res_results ->
               thing_inside (arg_results ++ res_results)
        ; return ( result, arg_ty_out `mkFunTy` res_ty_out
                 , mkWpFun arg_wrapper res_wrapper arg_ty_out res_ty_out
                   <.> match_wrapper ) }
+  where
+    herald = text "This rebindable syntax expects a function with"
+
 tcSynArgA orig sigma_ty (SynType the_ty) thing_inside
   = do { wrap   <- tcSubTypeO orig GenSigCtxt sigma_ty the_ty
+       ; the_ty <- readExpType the_ty
        ; result <- thing_inside []
        ; return (result, the_ty, wrap) }
 
@@ -1443,7 +1436,7 @@ tcExprSig expr sig@(TISI { sig_bndr  = s_bndr
 
   | otherwise = panic "tcExprSig"   -- Can't happen
   where
-    skol_info = SigSkol ExprSigCtxt (mkPhiTy theta tau)
+    skol_info = SigSkol ExprSigCtxt (mkCheckExpType $ mkPhiTy theta tau)
     skol_tvs = map snd skol_prs
 
 {- *********************************************************************
@@ -1459,15 +1452,13 @@ tcCheckId name res_ty
        ; addFunResCtxt False (HsVar (noLoc name)) actual_res_ty res_ty $
          tcWrapResultO (OccurrenceOf name)  expr actual_res_ty res_ty }
 
-tcCheckRecSelId :: AmbiguousFieldOcc Name -> TcRhoType -> TcM (HsExpr TcId)
+tcCheckRecSelId :: AmbiguousFieldOcc Name -> ExpRhoType -> TcM (HsExpr TcId)
 tcCheckRecSelId f@(Unambiguous (L _ lbl) _) res_ty
   = do { (expr, actual_res_ty) <- tcInferRecSelId f
        ; addFunResCtxt False (HsRecFld f) actual_res_ty res_ty $
          tcWrapResultO (OccurrenceOfRecSel lbl) expr actual_res_ty res_ty }
 tcCheckRecSelId (Ambiguous lbl _) res_ty
-  -- NB: This checkingExpType_maybe is highly suspect. But, then again,
-  -- so is the whole Note [Disambiguating record fields]
-  = case tcSplitFunTy_maybe <=< checkingExpType_maybe res_ty of
+  = case tcSplitFunTy_maybe =<< checkingExpType_maybe res_ty of
       Nothing       -> ambiguousSelector lbl
       Just (arg, _) -> do { sel_name <- disambiguateSelector lbl arg
                           ; tcCheckRecSelId (Unambiguous lbl sel_name) res_ty }
@@ -1689,7 +1680,7 @@ tcTagToEnum loc fun_name args res_ty
                      -- don't care about a type arg passed in.
                      -- So drop the evidence.
                    ; return term_arg }
-           [term_arg] -> do { _ <- toMonoExpType res_ty
+           [term_arg] -> do { _ <- expTypeToType res_ty
                             ; return term_arg }
            _          -> too_many_args
 
@@ -1711,7 +1702,7 @@ tcTagToEnum loc fun_name args res_ty
        ; checkTc (isEnumerationTyCon rep_tc)
                  (mk_error ty' doc2)
 
-       ; arg' <- tcMonoExpr arg intPrimTy
+       ; arg' <- tcMonoExpr arg (mkCheckExpType intPrimTy)
        ; let fun' = L loc (HsWrap (WpTyApp rep_ty) (HsVar (L loc fun)))
              rep_ty = mkTyConApp rep_tc rep_args
 
@@ -2020,7 +2011,7 @@ disambiguateRecordBinds record_expr record_rho rbnds res_ty
 
         -- Multiple possible parents: try harder to disambiguate
         -- Can we get a parent TyCon from the pushed-in type?
-        _:_ | Just p <- tyConOf fam_inst_envs res_ty -> return (RecSelData p)
+        _:_ | Just p <- tyConOfET fam_inst_envs res_ty -> return (RecSelData p)
 
         -- Does the expression being updated have a type signature?
         -- If so, try to extract a parent TyCon from it
@@ -2071,11 +2062,15 @@ disambiguateRecordBinds record_expr record_rho rbnds res_ty
 -- Extract the outermost TyCon of a type, if there is one; for
 -- data families this is the representation tycon (because that's
 -- where the fields live).
-tyConOf :: FamInstEnvs -> ExpRhoType -> Maybe TyCon
+tyConOf :: FamInstEnvs -> TcRhoType -> Maybe TyCon
 tyConOf fam_inst_envs ty0
-  = case tcSplitTyConApp_maybe <=< checkingExpType_maybe ty0 of
+  = case tcSplitTyConApp_maybe ty0 of
       Just (tc, tys) -> Just (fstOf3 (tcLookupDataFamInst fam_inst_envs tc tys))
       Nothing        -> Nothing
+
+-- Variant of tyConOf that works for ExpTypes
+tyConOfET :: FamInstEnvs -> ExpRhoType -> Maybe TyCon
+tyConOfET fam_inst_envs ty0 = tyConOf fam_inst_envs =<< checkingExpType_maybe ty0
 
 -- For an ambiguous record field, find all the candidate record
 -- selectors (as GlobalRdrElts) and their parents.
@@ -2264,7 +2259,7 @@ addFunResCtxt has_args fun fun_res_ty env_ty
       -- doesn't suppress some more useful context
   where
     mk_msg
-      = do { fun_res_ty <- readExpType fun_res_ty
+      = do { env_ty <- readExpType env_ty
                      -- by the time the message is rendered, the ExpType
                      -- will be filled in
            ; fun_res' <- zonkTcType fun_res_ty

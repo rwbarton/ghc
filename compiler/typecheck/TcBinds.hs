@@ -586,7 +586,7 @@ tcPolyCheck rec_tc prag_fn
                       , sig_loc   = loc })
             bind
   = do { ev_vars <- newEvVars theta
-       ; let skol_info = SigSkol ctxt (mkPhiTy theta tau)
+       ; let skol_info = SigSkol ctxt (mkCheckExpType $ mkPhiTy theta tau)
              prag_sigs = lookupPragEnv prag_fn name
              skol_tvs  = map snd skol_prs
                  -- Find the location of the original source type sig, if
@@ -1474,7 +1474,7 @@ tcMonoBinds is_rec sig_fn no_gen
     setSrcSpan b_loc    $
     do  { rhs_ty <- newOpenInferExpType
         ; (co_fn, matches')
-            <- tcExtendIdBndrs [TcIdBndr mono_id NotTopLevel] $
+            <- tcExtendIdBndrs [TcIdBndr_ExpType name rhs_ty NotTopLevel] $
                   -- We extend the error context even for a non-recursive
                   -- function so that in type error messages we show the
                   -- type of the thing whose rhs we are type checking

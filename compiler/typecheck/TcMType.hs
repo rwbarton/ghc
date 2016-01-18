@@ -29,9 +29,9 @@ module TcMType (
 
   --------------------------------
   -- Expected types
-  ExpType, ExpSigmaType, ExpRhoType,
+  ExpType(..), ExpSigmaType, ExpRhoType,
   mkCheckExpType, newOpenInferExpType, readExpType, writeExpType,
-  toMonoExpType, checkingExpType_maybe, checkingExpType
+  expTypeToType, checkingExpType_maybe, checkingExpType,
 
   --------------------------------
   -- Creating fresh type variables for pm checking
@@ -108,6 +108,7 @@ import qualified GHC.LanguageExtensions as LangExt
 import Control.Monad
 import Maybes
 import Data.List        ( mapAccumL, partition )
+import Control.Arrow    ( second )
 
 {-
 ************************************************************************
@@ -304,23 +305,7 @@ See also [wiki:Typechecking]
 
 -}
 
--- | An expected type to check against during type-checking.
-data ExpType = Check TcType
-             | Infer Unique  -- ^ for debugging only
-                     Kind
-                     (IORef (Maybe TcType))
-
-type ExpSigmaType = ExpType
-type ExpRhoType   = ExpType
-
-instance Outputable ExpType where
-  ppr (Check ty) = ppr ty
-  ppr (Infer u ki _)
-    = parens (text "Infer" <> braces (ppr u) <+> dcolon <+> ppr ki)
-
--- | Make an 'ExpType' suitable for checking.
-mkCheckExpType :: TcType -> ExpType
-mkCheckExpType = Check
+-- actual data definition is in TcType
 
 -- | Make an 'ExpType' suitable for inferring a type of kind * or #.
 newOpenInferExpType :: TcM ExpType
@@ -1138,8 +1123,9 @@ zonkCtEvidence ctev@(CtDerived { ctev_pred = pred })
        ; return (ctev { ctev_pred = pred' }) }
 
 zonkSkolemInfo :: SkolemInfo -> TcM SkolemInfo
-zonkSkolemInfo (SigSkol cx ty)  = do { ty' <- zonkTcType ty
-                                     ; return (SigSkol cx ty') }
+zonkSkolemInfo (SigSkol cx ty)  = do { ty  <- readExpType ty
+                                     ; ty' <- zonkTcType ty
+                                     ; return (SigSkol cx (mkCheckExpType ty')) }
 zonkSkolemInfo (InferSkol ntys) = do { ntys' <- mapM do_one ntys
                                      ; return (InferSkol ntys') }
   where
@@ -1257,13 +1243,8 @@ zonkTidyOrigin env orig@(TypeEqOrigin { uo_actual   = act
                                       , uo_expected = exp
                                       , uo_thing    = m_thing })
   = do { (env1, act') <- zonkTidyTcType env  act
-       ; (env2, exp') <- mkCheckExpType <$> case exp of
-           Check exp_ty -> zonkTidyTcType env1 exp_ty
-           Infer u ki _ -> do { x <- newFlexiTyVarTy ki
-                              ; traceTc "Zonking away ExpType" $
-                                  ppr u <+> text ":=" <+> ppr x
-                              ; zonkTidyTcType env1 x }
-       ; (env2, exp') <- zonkTidyTcType env1 exp
+       ; exp <- readExpType exp  -- by now, it's filled in
+       ; (env2, exp') <- second mkCheckExpType <$> zonkTidyTcType env1 exp
        ; (env3, m_thing') <- zonkTidyErrorThing env2 m_thing
        ; return ( env3, orig { uo_actual   = act'
                              , uo_expected = exp'
@@ -1321,7 +1302,9 @@ tidyEvVar env var = setVarType var (tidyType env (varType var))
 ----------------
 tidySkolemInfo :: TidyEnv -> SkolemInfo -> SkolemInfo
 tidySkolemInfo env (DerivSkol ty)       = DerivSkol (tidyType env ty)
-tidySkolemInfo env (SigSkol cx ty)      = SigSkol cx (tidyType env ty)
+tidySkolemInfo env (SigSkol cx ty)      = SigSkol cx (mkCheckExpType $
+                                                      tidyType env $
+                                                      checkingExpType ty)
 tidySkolemInfo env (InferSkol ids)      = InferSkol (mapSnd (tidyType env) ids)
 tidySkolemInfo env (UnifyForAllSkol ty) = UnifyForAllSkol (tidyType env ty)
 tidySkolemInfo _   info                 = info

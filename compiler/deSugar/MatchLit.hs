@@ -442,12 +442,13 @@ We generate:
 matchNPlusKPats :: [Id] -> Type -> [EquationInfo] -> DsM MatchResult
 -- All NPlusKPats, for the *same* literal k
 matchNPlusKPats (var:vars) ty (eqn1:eqns)
-  = do  { let NPlusKPat (L _ n1) (L _ lit) ge minus = firstPat eqn1
+  = do  { let NPlusKPat (L _ n1) (L _ lit1) lit2 ge minus = firstPat eqn1
         ; ge_expr     <- dsExpr ge
         ; minus_expr  <- dsExpr minus
-        ; lit_expr    <- dsOverLit lit
-        ; let pred_expr   = mkApps ge_expr [Var var, lit_expr]
-              minusk_expr = mkApps minus_expr [Var var, lit_expr]
+        ; lit1_expr   <- dsOverLit lit1
+        ; lit2_expr   <- dsOverLit lit2
+        ; let pred_expr   = mkApps ge_expr [Var var, lit1_expr]
+              minusk_expr = mkApps minus_expr [Var var, lit2_expr]
               (wraps, eqns') = mapAndUnzip (shift n1) (eqn1:eqns)
         ; match_result <- match vars ty eqns'
         ; return  (mkGuardedMatchResult pred_expr               $
@@ -455,7 +456,7 @@ matchNPlusKPats (var:vars) ty (eqn1:eqns)
                    adjustMatchResult (foldr1 (.) wraps)         $
                    match_result) }
   where
-    shift n1 eqn@(EqnInfo { eqn_pats = NPlusKPat (L _ n) _ _ _ : pats })
+    shift n1 eqn@(EqnInfo { eqn_pats = NPlusKPat (L _ n) _ _ _ _ : pats })
         = (wrapBind n n1, eqn { eqn_pats = pats })
         -- The wrapBind is a no-op for the first equation
     shift _ e = pprPanic "matchNPlusKPats/shift" (ppr e)

@@ -10,9 +10,9 @@ Type subsumption and unification
 
 module TcUnify (
   -- Full-blown subsumption
-  tcWrapResult, tcWrapResultO, tcSkolemise,
+  tcWrapResult, tcWrapResultO, tcSkolemise, tcSkolemiseET,
   tcSubTypeHR, tcSubType, tcSubTypeO, tcSubType_NC, tcSubTypeDS, tcSubTypeDS_O,
-  tcSubTypeDS_NC, tcSubTypeDS_NC_O, tcSubTypeET,
+  tcSubTypeDS_NC, tcSubTypeDS_NC_O, tcSubTypeET, tcSubTypeET_NC,
   checkConstraints, buildImplication, buildImplicationFor,
 
   -- Various unifications
@@ -103,6 +103,10 @@ namely:
         A function definition
      An operator section
 
+This function must be written CPS'd because it needs to fill in the
+ExpTypes produced for arguments before it can fill in the ExpType
+passed in.
+
 -}
 
 -- Use this one when you have an "expected" type.
@@ -121,7 +125,7 @@ matchExpectedFunTys herald arity orig_ty thing_inside
       _        -> defer [] arity orig_ty
   where
     go acc_arg_tys 0 ty
-      = do { result <- thing_inside (reverse acc_arg_tys) ty
+      = do { result <- thing_inside (reverse acc_arg_tys) (mkCheckExpType ty)
            ; return (result, idHsWrapper) }
 
     go acc_arg_tys n ty
@@ -132,8 +136,7 @@ matchExpectedFunTys herald arity orig_ty thing_inside
         do { (result, wrap_res) <- go (mkCheckExpType arg_ty : acc_arg_tys)
                                       (n-1) res_ty
            ; return ( result
-                    , mkWpFun idHsWrapper wrap_res arg_ty res_ty
-                    , mkTcFunCo Nominal (mkTcNomReflCo arg_ty) co_res ) }
+                    , mkWpFun idHsWrapper wrap_res arg_ty res_ty ) }
 
     go acc_arg_tys n ty@(TyVarTy tv)
       | ASSERT( isTcTyVar tv) isMetaTyVar tv
@@ -173,21 +176,15 @@ matchExpectedFunTys herald arity orig_ty thing_inside
 
     ------------
     mk_ctxt :: TidyEnv -> TcM (TidyEnv, MsgDoc)
-    mk_ctxt env = do { (env', ty) <- zonkTidyTcType env orig_ty
+    mk_ctxt env = do { (env', ty) <- zonkTidyTcType env orig_tc_ty
                      ; let (args, _) = tcSplitFunTys ty
                            n_actual = length args
-                           (env'', orig_ty') = tidyOpenType env' orig_ty
-                     ; return (env'', mk_msg orig_ty' ty n_actual) }
-
-    mk_msg full_ty ty n_args
-      = herald <+> speakNOf full_arity (text "argument") <> comma $$
-        if n_args == full_arity
-          then ptext (sLit "its type is") <+> quotes (pprType full_ty) <>
-               comma $$
-               ptext (sLit "it is specialized to") <+> quotes (pprType ty)
-          else sep [ptext (sLit "but its type") <+> quotes (pprType ty),
-                    if n_args == 0 then ptext (sLit "has none")
-                    else ptext (sLit "has only") <+> speakN n_args]
+                           (env'', orig_ty') = tidyOpenType env' orig_tc_ty
+                     ; return ( env''
+                              , mk_fun_tys_msg orig_ty' ty n_actual arity herald) }
+      where
+        orig_tc_ty = checkingExpType orig_ty
+            -- this is safe b/c we're called from "go"
 
 -- Like 'matchExpectedFunTys', but used when you have an "actual" type,
 -- for example in function application
@@ -214,7 +211,7 @@ matchActualFunTysPart :: Outputable a
                       -> [TcSigmaType] -- reversed args. See (*) below.
                       -> Arity   -- overall arity of the function, for errs
                       -> TcM (HsWrapper, [TcSigmaType], TcSigmaType)
-matchActualFunTysPart swap_tys herald ct_orig mb_thing arity orig_ty
+matchActualFunTysPart herald ct_orig mb_thing arity orig_ty
                       orig_old_args full_arity
   = go arity orig_old_args orig_ty
 -- Does not allocate unnecessary meta variables: if the input already is
@@ -264,7 +261,7 @@ matchActualFunTysPart swap_tys herald ct_orig mb_thing arity orig_ty
       = ASSERT( not (isPredTy arg_ty) )
         do { (wrap_res, tys, ty_r) <- go (n-1) (arg_ty : acc_args) res_ty
            ; return ( mkWpFun idHsWrapper wrap_res arg_ty ty_r
-                    , mkCheckExpType arg_ty : tys, ty_r ) }
+                    , arg_ty : tys, ty_r ) }
 
     go n acc_args ty@(TyVarTy tv)
       | ASSERT( isTcTyVar tv) isMetaTyVar tv
@@ -294,7 +291,7 @@ matchActualFunTysPart swap_tys herald ct_orig mb_thing arity orig_ty
     ------------
     defer n fun_ty
       = do { arg_tys <- replicateM n newOpenFlexiTyVarTy
-           ; res_ty  <- new_flexi
+           ; res_ty  <- newOpenFlexiTyVarTy
            ; let unif_fun_ty = mkFunTys arg_tys res_ty
            ; co <- unifyType mb_thing fun_ty unif_fun_ty
            ; return (mkWpCastN co, arg_tys, res_ty) }
@@ -308,17 +305,24 @@ matchActualFunTysPart swap_tys herald ct_orig mb_thing arity orig_ty
            ; let (zonked_args, _) = tcSplitFunTys zonked
                  n_actual         = length zonked_args
                  (env2, unzonked) = tidyOpenType env1 ty
-           ; return (env2, mk_msg unzonked zonked n_actual) }
+           ; return ( env2
+                    , mk_fun_tys_msg unzonked zonked n_actual full_arity herald) }
 
-    mk_msg full_ty ty n_args
-      = herald <+> speakNOf full_arity (text "argument") <> comma $$
-        if n_args == full_arity
-          then ptext (sLit "its type is") <+> quotes (pprType full_ty) <>
-               comma $$
-               ptext (sLit "it is specialized to") <+> quotes (pprType ty)
-          else sep [ptext (sLit "but its type") <+> quotes (pprType ty),
-                    if n_args == 0 then ptext (sLit "has none")
-                    else ptext (sLit "has only") <+> speakN n_args]
+mk_fun_tys_msg :: TcType  -- the full type passed in (unzonked)
+               -> TcType  -- the full type passed in (zonked)
+               -> Arity   -- the # of args found
+               -> Arity   -- the # of args wanted
+               -> SDoc    -- overall herald
+               -> SDoc
+mk_fun_tys_msg full_ty ty n_args full_arity herald
+  = herald <+> speakNOf full_arity (text "argument") <> comma $$
+    if n_args == full_arity
+      then ptext (sLit "its type is") <+> quotes (pprType full_ty) <>
+           comma $$
+           ptext (sLit "it is specialized to") <+> quotes (pprType ty)
+      else sep [ptext (sLit "but its type") <+> quotes (pprType ty),
+                if n_args == 0 then ptext (sLit "has none")
+                else ptext (sLit "has only") <+> speakN n_args]
 
 ----------------------
 matchExpectedListTy :: TcRhoType -> TcM (TcCoercionN, TcRhoType)
@@ -542,8 +546,21 @@ tcSubTypeET orig ty_actual@(Infer {}) ty_expected
 tcSubTypeET orig (Check ty_actual) ty_expected
   = tcSubTypeO orig GenSigCtxt ty_actual (mkCheckExpType ty_expected)
 
-tcSubTypeO :: Outputable a
-           => CtOrigin      -- ^ of the actual type
+-- | This is like 'tcSubType' but accepts an 'ExpType' as the /actual/ type.
+-- You probably want this only when looking at patterns, never expressions.
+-- Does not add context.
+tcSubTypeET_NC :: UserTypeCtxt -> ExpSigmaType -> TcSigmaType -> TcM HsWrapper
+tcSubTypeET_NC _ ty_actual@(Infer {}) ty_expected
+  = mkWpCastN . mkTcSymCo <$> unifyExpType noThing ty_expected ty_actual
+tcSubTypeET_NC ctxt (Check ty_actual) ty_expected
+  = tc_sub_type orig orig ctxt ty_actual ty_expected'
+  where
+    ty_expected' = mkCheckExpType ty_expected
+    orig = TypeEqOrigin { uo_actual   = ty_actual
+                        , uo_expected = ty_expected'
+                        , uo_thing    = Nothing }
+
+tcSubTypeO :: CtOrigin      -- ^ of the actual type
            -> UserTypeCtxt  -- ^ of the expected type
            -> TcSigmaType
            -> ExpSigmaType
@@ -628,31 +645,33 @@ tcSubTypeDS_NC_O :: Outputable a
                  -> TcSigmaType -> ExpRhoType -> TcM HsWrapper
 -- Just like tcSubType, but with the additional precondition that
 -- ty_expected is deeply skolemised
-tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual ty_expected@(Infer {})
+tcSubTypeDS_NC_O _ _ m_thing ty_actual ty_expected@(Infer {})
   = mkWpCastN <$> unifyExpType m_thing ty_actual ty_expected
-tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual (Check ty_expected)
-  = tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected'
+tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual et@(Check ty_expected)
+  = tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected
   where
-    eq_orig = TypeEqOrigin { uo_actual = ty_actual, uo_expected = ty_expected
+    eq_orig = TypeEqOrigin { uo_actual = ty_actual, uo_expected = et
                            , uo_thing = mkErrorThing <$> m_thing}
 
 ---------------
 tc_sub_type :: CtOrigin   -- origin used when calling uType
             -> CtOrigin   -- origin used when instantiating
             -> UserTypeCtxt -> TcSigmaType -> ExpSigmaType -> TcM HsWrapper
-tc_sub_type eq_orig _ ctxt ty_actual et@(Infer _ ki _)
+tc_sub_type eq_orig _ _ ty_actual et@(Infer {})
   = mkWpCastN <$> uExpType eq_orig ty_actual et
-  = do { ki_co <- uType kind_orig KindLevel (typeKind ty_actual) ki
-       ; writeExpType et (ty_actual `mkCastTy` ki_co) }
-  where
-    kind_orig = KindEqOrigin ty_actual Nothing eq_orig (Just TypeLevel)
 
-tc_sub_type eq_orig inst_orig ctxt ty_actual exp_ty@(Check ty_expected)
+tc_sub_type eq_orig inst_orig ctxt ty_actual (Check ty_expected)
+  = tc_sub_tc_type eq_orig inst_orig ctxt ty_actual ty_expected
+
+tc_sub_tc_type :: CtOrigin   -- used when calling uType
+               -> CtOrigin   -- used when instantiating
+               -> UserTypeCtxt -> TcSigmaType -> TcSigmaType -> TcM HsWrapper
+tc_sub_tc_type eq_orig inst_orig ctxt ty_actual ty_expected
   | Just tv_actual <- tcGetTyVar_maybe ty_actual -- See Note [Higher rank types]
   = do { lookup_res <- lookupTcTyVar tv_actual
        ; case lookup_res of
-           Filled ty_actual' -> tc_sub_type eq_orig inst_orig
-                                            ctxt ty_actual' exp_ty
+           Filled ty_actual' -> tc_sub_tc_type eq_orig inst_orig
+                                               ctxt ty_actual' ty_expected
 
              -- It's tempting to see if tv_actual can unify with a polytype
              -- and, if so, call uType; otherwise, skolemise first. But this
@@ -701,7 +720,7 @@ tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected
                Filled ty_e' ->
                  do { traceTc "tcSubTypeDS_NC_O following filled exp meta-tyvar:"
                         (ppr tv_e <+> text "-->" <+> ppr ty_e')
-                    ; tc_sub_type eq_orig inst_orig ctxt ty_a ty_e' }
+                    ; tc_sub_tc_type eq_orig inst_orig ctxt ty_a ty_e' }
                Unfilled details
                  |  canUnifyWithPolyType dflags details
                     && isTouchableMetaTyVar tclvl tv_e  -- don't want skolems here
@@ -720,8 +739,10 @@ tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected
       = -- See Note [Co/contra-variance of subsumption checking]
         do { res_wrap <- tc_sub_type_ds eq_orig inst_orig ctxt act_res exp_res
            ; arg_wrap
-               <- tc_sub_type eq_orig (GivenOrigin (SigSkol GenSigCtxt exp_arg))
-                              ctxt exp_arg act_arg
+               <- tc_sub_tc_type eq_orig (GivenOrigin
+                                          (SigSkol GenSigCtxt
+                                           (mkCheckExpType exp_arg)))
+                                 ctxt exp_arg act_arg
            ; return (mkWpFun arg_wrap res_wrap exp_arg exp_res) }
                -- arg_wrap :: exp_arg ~ act_arg
                -- res_wrap :: act-res ~ exp_res
@@ -730,7 +751,8 @@ tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected
       | let (tvs, theta, _) = tcSplitSigmaTy ty_a
       , not (null tvs && null theta)
       = do { (in_wrap, in_rho) <- topInstantiate inst_orig ty_a
-           ; body_wrap <- tcSubTypeDS_NC_O inst_orig ctxt noThing in_rho ty_e
+           ; body_wrap <- tc_sub_type_ds (eq_orig { uo_actual = in_rho })
+                                         inst_orig ctxt in_rho ty_e
            ; return (body_wrap <.> in_wrap) }
 
       | otherwise   -- Revert to unification
@@ -852,7 +874,8 @@ tcSkolemise ctxt expected_ty thing_inside
 
         -- Use the *instantiated* type in the SkolemInfo
         -- so that the names of displayed type variables line up
-        ; let skol_info = SigSkol ctxt (mkFunTys (map varType given) rho')
+        ; let skol_info = SigSkol ctxt (mkCheckExpType $
+                                        mkFunTys (map varType given) rho')
 
         ; (ev_binds, result) <- checkConstraints skol_info tvs' given $
                                 thing_inside tvs' rho'
@@ -860,6 +883,15 @@ tcSkolemise ctxt expected_ty thing_inside
         ; return (wrap <.> mkWpLet ev_binds, result) }
           -- The ev_binds returned by checkConstraints is very
           -- often empty, in which case mkWpLet is a no-op
+
+-- | Variant of 'tcSkolemise' that takes an ExpType
+tcSkolemiseET :: UserTypeCtxt -> ExpSigmaType
+              -> (ExpRhoType -> TcM result)
+              -> TcM (HsWrapper, result)
+tcSkolemiseET _ et@(Infer {}) thing_inside
+  = (idHsWrapper, ) <$> thing_inside et
+tcSkolemiseET ctxt (Check ty) thing_inside
+  = tcSkolemise ctxt ty $ \_ -> thing_inside . mkCheckExpType
 
 checkConstraints :: SkolemInfo
                  -> [TcTyVar]           -- Skolems
@@ -959,7 +991,7 @@ unifyExpType mb_thing ty1 ty2
   = uExpType ty_orig ty1 ty2
   where
     ty_orig   = TypeEqOrigin { uo_actual   = ty1
-                             , uo_expected = et
+                             , uo_expected = ty2
                              , uo_thing    = mkErrorThing <$> mb_thing }
 
 -- | Use this instead of 'Nothing' when calling 'unifyType' without
@@ -1608,7 +1640,7 @@ matchExpectedFunKind num_args_remaining ty = go
     go k@(ForAllTy (Anon arg) res)
       = return (mkNomReflCo k, arg, res)
 
-    go other = defer False other
+    go other = defer other
 
     defer k
       = do { arg_kind <- newMetaKindVar

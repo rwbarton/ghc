@@ -1878,7 +1878,8 @@ tcGhciStmts stmts
         let {
             ret_ty      = mkListTy unitTy ;
             io_ret_ty   = mkTyConApp ioTyCon [ret_ty] ;
-            tc_io_stmts = tcStmtsAndThen GhciStmtCtxt tcDoStmt stmts io_ret_ty ;
+            tc_io_stmts = tcStmtsAndThen GhciStmtCtxt tcDoStmt stmts
+                                         (mkCheckExpType io_ret_ty) ;
             names = collectLStmtsBinders stmts ;
          } ;
 
