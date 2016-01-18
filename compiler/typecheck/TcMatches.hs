@@ -83,14 +83,19 @@ tcMatchesFun fun_name matches exp_ty
           traceTc "tcMatchesFun" (ppr fun_name $$ ppr exp_ty)
         ; checkArgs fun_name matches
 
-        ; exp_ty <- tauifyMultipleMatches matches exp_ty
+        ; exp_ty <- expTypeToType exp_ty
         ; (wrap_gen, (wrap_fun, group))
             <- tcSkolemise (FunSigCtxt fun_name True) exp_ty $ \ _ exp_rho ->
                   -- Note [Polymorphic expected type for tcMatchesFun]
                do { (matches', wrap_fun)
                        <- matchExpectedFunTys herald arity exp_rho $
                           \ pat_tys rhs_ty ->
-                          tcMatches match_ctxt pat_tys rhs_ty matches
+                     -- See Note [Case branches must never infer a non-tau type]
+                     do { rhs_ty : pat_tys
+                            <- mapM (tauifyMultipleMatches matches)
+                                    (rhs_ty : pat_tys)
+                        ; rhs_ty  <- tauifyMultipleMathces matches rhs_ty
+                        ; tcMatches match_ctxt pat_tys rhs_ty matches }
                   ; return (wrap_fun, matches') }
         ; return (wrap_gen <.> wrap_fun, group) }
   where
@@ -124,11 +129,12 @@ tcMatchLambda :: SDoc -- see Note [Herald for matchExpectedFunTys] in TcUnify
               -> TcM (HsWrapper, [TcSigmaType], MatchGroup TcId (LHsExpr TcId))
                      -- also returns the argument types
 tcMatchLambda herald match_ctxt match res_ty
-  = do { res_ty <- tauifyMultipleMatches match res_ty
-       ; ((match', pat_tys), wrap)
+  = do { ((match', pat_tys), wrap)
            <- matchExpectedFunTys herald n_pats res_ty $
               \ pat_tys rhs_ty ->
-              do { match' <- tcMatches match_ctxt pat_tys rhs_ty match
+              do { rhs_ty : pat_tys <- mapM (tauifyMultipleMatches match)
+                                            (rhs_ty : pat_tys)
+                 ; match' <- tcMatches match_ctxt pat_tys rhs_ty match
                  ; pat_tys <- mapM readExpType pat_tys
                  ; return (match', pat_tys) }
        ; return (wrap, pat_tys, match') }
@@ -153,8 +159,8 @@ tcGRHSsPat grhss res_ty = tcGRHSs match_ctxt grhss res_ty
 *                                                                      *
 ************************************************************************
 
-Note [Case branches must be taus]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Note [Case branches must never infer a non-tau type]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Consider
 
   case ... of
@@ -165,16 +171,17 @@ Should that type-check? The problem is that, if we check the second branch
 first, then we'll get a type (b -> b) for the branches, which won't unify
 with the polytype in the first branch. If we check the first branch first,
 then everything is OK. This order-dependency is terrible. So we want only
-proper tau-types in branches. This is what tauTvForReturnsTv ensures:
-it gets rid of those pesky ReturnTvs that might unify with polytypes.
+proper tau-types in branches (unless a sigma-type is pushed down).
+This is what expTypeToType ensures: it replaces an Infer with a fresh
+tau-type.
 
 An even trickier case looks like
 
   f x True  = x undefined
   f x False = x ()
 
-Here, we see that the arguments must also be non-ReturnTvs. Thus, we must
-tauify before calling matchFunTys.
+Here, we see that the arguments must also be non-Infer. Thus, we must
+use expTypeToType on the output of matchExpectedFunTys, not the input.
 
 But we make a special case for a one-branch case. This is so that
 
@@ -183,9 +190,9 @@ But we make a special case for a one-branch case. This is so that
 still gets assigned a polytype.
 -}
 
--- | When the MatchGroup has multiple RHSs, convert any ReturnTvs in the
+-- | When the MatchGroup has multiple RHSs, convert an Infer ExpType in the
 -- expected type into TauTvs.
--- See Note [Case branches must be taus]
+-- See Note [Case branches must never infer a non-tau type]
 tauifyMultipleMatches :: MatchGroup id body
                       -> ExpType
                       -> TcM ExpType
@@ -199,8 +206,9 @@ tauifyMultipleMatches group exp_ty
       -- ExpType
 
 -- | Type-check a MatchGroup. If there are multiple RHSs, the expected type
--- must already be tauified. See Note [Case branches must be taus] and
--- tauifyMultipleMatches
+-- must already be tauified.
+-- See Note [Case branches must never infer a non-tau type]
+-- about tauifyMultipleMatches
 tcMatches :: (Outputable (body Name)) => TcMatchCtxt body
           -> [ExpSigmaType]      -- Expected pattern types
           -> ExpRhoType          -- Expected result-type of the Match.

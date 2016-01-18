@@ -35,7 +35,7 @@ module TcType (
   MetaDetails(Flexi, Indirect), MetaInfo(..), TauTvFlavour(..),
   isImmutableTyVar, isSkolemTyVar, isMetaTyVar,  isMetaTyVarTy, isTyVarTy,
   isSigTyVar, isOverlappableTyVar,  isTyConableTyVar,
-  isFskTyVar, isFmvTyVar, isFlattenTyVar, isReturnTyVar,
+  isFskTyVar, isFmvTyVar, isFlattenTyVar,
   isAmbiguousTyVar, metaTvRef, metaTyVarInfo,
   isFlexi, isIndirect, isRuntimeUnkSkol,
   metaTyVarTcLevel, setMetaTyVarTcLevel, metaTyVarTcLevel_maybe,
@@ -313,35 +313,6 @@ Similarly consider
 When doing kind inference on {S,T} we don't want *skolems* for k1,k2,
 because they end up unifying; we want those SigTvs again.
 
-Note [ReturnTv]
-~~~~~~~~~~~~~~~
-We sometimes want to convert a checking algorithm into an inference
-algorithm. An easy way to do this is to "check" that a term has a
-metavariable as a type. But, we must be careful to allow that metavariable
-to unify with *anything*. (Well, anything that doesn't fail an occurs-check.)
-This is what ReturnTv means.
-
-For example, if we have
-
-  (undefined :: (forall a. TF1 a ~ TF2 a => a)) x
-
-we'll call (tcInfer . tcExpr) on the function expression. tcInfer will
-create a ReturnTv to represent the expression's type. We really need this
-ReturnTv to become set to (forall a. TF1 a ~ TF2 a => a) despite the fact
-that this type mentions type families and is a polytype.
-
-However, we must also be careful to make sure that the ReturnTvs really
-always do get unified with something -- we don't want these floating
-around in the solver. So, we check after running the checker to make
-sure the ReturnTv is filled. If it's not, we set it to a TauTv.
-
-We can't ASSERT that no ReturnTvs hit the solver, because they
-can if there's, say, a kind error that stops checkTauTvUpdate from
-working. This happens in test case typecheck/should_fail/T5570, for
-example.
-
-See also the commentary on #9404.
-
 Note [TyVars and TcTyVars]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 The Var type has constructors TyVar and TcTyVar.  They are used
@@ -395,10 +366,6 @@ data MetaInfo
    = TauTv         -- This MetaTv is an ordinary unification variable
                    -- A TauTv is always filled in with a tau-type, which
                    -- never contains any ForAlls.
-
-   | ReturnTv      -- Can unify with *anything*. Used to convert a
-                   -- type "checking" algorithm into a type inference algorithm.
-                   -- See Note [ReturnTv]
 
    | SigTv         -- A variant of TauTv, except that it should not be
                    -- unified with a type, only with a type variable
@@ -607,7 +574,6 @@ pprTcTyVarDetails (MetaTv { mtv_info = info, mtv_tclvl = tclvl })
   = pp_info <> colon <> ppr tclvl
   where
     pp_info = case info of
-                ReturnTv   -> ptext (sLit "ret")
                 TauTv      -> ptext (sLit "tau")
                 SigTv      -> ptext (sLit "sig")
                 FlatMetaTv -> ptext (sLit "fuv")
@@ -835,7 +801,7 @@ isImmutableTyVar tv
 
 isTyConableTyVar, isSkolemTyVar, isOverlappableTyVar,
   isMetaTyVar, isAmbiguousTyVar,
-  isFmvTyVar, isFskTyVar, isFlattenTyVar, isReturnTyVar :: TcTyVar -> Bool
+  isFmvTyVar, isFskTyVar, isFlattenTyVar :: TcTyVar -> Bool
 
 isTyConableTyVar tv
         -- True of a meta-type variable that can be filled in
@@ -883,11 +849,6 @@ isMetaTyVar tv
         MetaTv {} -> True
         _         -> False
   | otherwise = False
-
-isReturnTyVar tv
-  = case tcTyVarDetails tv of
-      MetaTv { mtv_info = ReturnTv } -> True
-      _                              -> False
 
 -- isAmbiguousTyVar is used only when reporting type errors
 -- It picks out variables that are unbound, namely meta
@@ -1442,8 +1403,7 @@ occurCheckExpand :: DynFlags -> TcTyVar -> Type -> OccCheckResult Type
 -- See Note [Occurs check expansion]
 -- Check whether
 --   a) the given variable occurs in the given type.
---   b) there is a forall in the type (unless we have -XImpredicativeTypes
---                                     or it's a ReturnTv
+--   b) there is a forall in the type (unless we have -XImpredicativeTypes)
 --   c) if it's a SigTv, ty should be a tyvar
 --
 -- We may have needed to do some type synonym unfolding in order to
@@ -1591,7 +1551,6 @@ occurCheckExpand dflags tv ty
 canUnifyWithPolyType :: DynFlags -> TcTyVarDetails -> Bool
 canUnifyWithPolyType dflags details
   = case details of
-      MetaTv { mtv_info = ReturnTv } -> True   -- See Note [ReturnTv]
       MetaTv { mtv_info = SigTv }    -> False
       MetaTv { mtv_info = TauTv }    -> xopt LangExt.ImpredicativeTypes dflags
       _other                         -> True

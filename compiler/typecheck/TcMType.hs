@@ -20,12 +20,9 @@ module TcMType (
   newFlexiTyVarTy,              -- Kind -> TcM TcType
   newFlexiTyVarTys,             -- Int -> Kind -> TcM [TcType]
   newOpenFlexiTyVarTy,
-  newReturnTyVar, newReturnTyVarTy,
-  newOpenReturnTyVar,
   newMetaKindVar, newMetaKindVars,
   cloneMetaTyVar,
   newFmvTyVar, newFskTyVar,
-  tauTvForReturnTv,
 
   readMetaTyVar, writeMetaTyVar, writeMetaTyVarRef,
   newMetaDetails, isFilledMetaTyVar, isUnfilledMetaTyVar,
@@ -707,7 +704,6 @@ newAnonMetaTyVar meta_info kind
   = do  { uniq <- newUnique
         ; let name = mkMetaTyVarName uniq s
               s = case meta_info of
-                        ReturnTv    -> fsLit "r"
                         TauTv       -> fsLit "t"
                         FlatMetaTv  -> fsLit "fmv"
                         SigTv       -> fsLit "a"
@@ -725,42 +721,11 @@ newFlexiTyVarTy kind = do
 newFlexiTyVarTys :: Int -> Kind -> TcM [TcType]
 newFlexiTyVarTys n kind = mapM newFlexiTyVarTy (nOfThem n kind)
 
-newReturnTyVar :: Kind -> TcM TcTyVar
-newReturnTyVar kind = newAnonMetaTyVar ReturnTv kind
-
-newReturnTyVarTy :: Kind -> TcM TcType
-newReturnTyVarTy kind = mkTyVarTy <$> newReturnTyVar kind
-
 -- | Create a tyvar that can be a lifted or unlifted type.
 newOpenFlexiTyVarTy :: TcM TcType
 newOpenFlexiTyVarTy
   = do { lev <- newFlexiTyVarTy levityTy
        ; newFlexiTyVarTy (tYPE lev) }
-
--- | Create a *return* tyvar that can be a lifted or unlifted type.
-newOpenReturnTyVar :: TcM (TcTyVar, TcKind)
-newOpenReturnTyVar
-  = do { lev <- newFlexiTyVarTy levityTy  -- this doesn't need ReturnTv
-       ; let k = tYPE lev
-       ; tv <- newReturnTyVar k
-       ; return (tv, k) }
-
--- | If the type is a ReturnTv, fill it with a new meta-TauTv. Otherwise,
--- no change. This function can look through ReturnTvs and returns a partially
--- zonked type as an optimisation.
-tauTvForReturnTv :: TcType -> TcM TcType
-tauTvForReturnTv ty
-  | Just tv <- tcGetTyVar_maybe ty
-  , isReturnTyVar tv
-  = do { contents <- readMetaTyVar tv
-       ; case contents of
-           Flexi -> do { tau_ty <- newFlexiTyVarTy (tyVarKind tv)
-                       ; writeMetaTyVar tv tau_ty
-                       ; return tau_ty }
-           Indirect ty -> tauTvForReturnTv ty }
-  | otherwise
-  = ASSERT( all (not . isReturnTyVar) (tyCoVarsOfTypeList ty) )
-    return ty
 
 newMetaSigTyVars :: [TyVar] -> TcM (TCvSubst, [TcTyVar])
 newMetaSigTyVars = mapAccumLM newMetaSigTyVarX emptyTCvSubst
@@ -780,10 +745,7 @@ newMetaTyVarX :: TCvSubst -> TyVar -> TcM (TCvSubst, TcTyVar)
 -- an existing TyVar. We substitute kind variables in the kind.
 newMetaTyVarX subst tyvar
   = do  { uniq <- newUnique
-               -- See Note [Levity polymorphic variables accept foralls]
-        ; let info | isLevityPolymorphic (tyVarKind tyvar) = ReturnTv
-                   | otherwise                             = TauTv
-        ; details <- newMetaDetails info
+        ; details <- newMetaDetails TauTv
         ; let name   = mkSystemName uniq (getOccName tyvar)
                        -- See Note [Name of an instantiated type variable]
               kind   = substTy subst (tyVarKind tyvar)
@@ -804,23 +766,6 @@ newMetaSigTyVarX subst tyvar
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 At the moment we give a unification variable a System Name, which
 influences the way it is tidied; see TypeRep.tidyTyVarBndr.
-
-Note [Levity polymorphic variables accept foralls]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Here is a common paradigm:
-   foo :: (forall a. a -> a) -> Int
-   foo = error "urk"
-To make this work we need to instantiate 'error' with a polytype.
-A similar case is
-   bar :: Bool -> (forall a. a->a) -> Int
-   bar True = \x. (x 3)
-   bar False = error "urk"
-Here we need to instantiate 'error' with a polytype.
-
-But 'error' has a levity polymorphic type variable, precisely so that
-we can instantiate it with Int#.  So we also allow such type variables
-to be instantiated with foralls.  It's a bit of a hack, but seems
-straightforward.
 
 ************************************************************************
 *                                                                      *

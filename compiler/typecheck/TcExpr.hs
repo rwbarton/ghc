@@ -361,14 +361,14 @@ tcExpr expr@(OpApp arg1 op fix arg2) res_ty
        --   ($) :: forall (v:Levity) (a:*) (b:TYPE v). (a->b) -> a -> b
        -- Eg we do not want to allow  (D#  $  4.0#)   Trac #5570
        --    (which gives a seg fault)
-       -- We do this by unifying with a MetaTv; but of course
-       -- it must allow foralls in the type it unifies with (hence ReturnTv)!
        --
        -- The *result* type can have any kind (Trac #8739),
        -- so we don't need to check anything for that
-       ; a2_tv <- newReturnTyVar liftedTypeKind
-       ; let a2_ty = mkTyVarTy a2_tv
-       ; co_a <- unifyType (Just arg2) arg2_sigma a2_ty    -- arg2_sigma ~N a2_ty
+       ; _ <- unifyKind (Just arg2_sigma) (typeKind arg2_sigma) liftedTypeKind
+           -- ignore the evidence. arg2_sigma must have type * or #,
+           -- because we know arg2_sigma -> or_res_ty is well-kinded
+           -- (because otherwise matchActualFunTys would fail)
+           -- There's no possibility here of, say, a kind family reducing to *.
 
        ; wrap_res <- tcSubTypeHR orig1 (Just expr) op_res_ty res_ty
                        -- op_res -> res
@@ -376,24 +376,19 @@ tcExpr expr@(OpApp arg1 op fix arg2) res_ty
        ; op_id  <- tcLookupId op_name
        ; res_ty <- readExpType res_ty
        ; let op' = L loc (HsWrap (mkWpTyApps [ getLevity "tcExpr ($)" res_ty
-                                             , a2_ty
+                                             , arg2_sigma
                                              , res_ty])
                                  (HsVar (L lv op_id)))
              -- arg1' :: arg1_ty
              -- wrap_arg1 :: arg1_ty "->" (arg2_sigma -> op_res_ty)
              -- wrap_res :: op_res_ty "->" res_ty
-             -- co_a :: arg2_sigma ~N a2_ty
              -- op' :: (a2_ty -> res_ty) -> a2_ty -> res_ty
 
-             -- wrap1 :: arg1_ty "->" (a2_ty -> res_ty)
-             wrap1 = mkWpFun (mkWpCastN (mkTcSymCo co_a))
-                       wrap_res a2_ty res_ty <.> wrap_arg1
+             -- wrap1 :: arg1_ty "->" (arg2_sigma -> res_ty)
+             wrap1 = mkWpFun idHsWrapper wrap_res arg2_sigma res_ty
+                     <.> wrap_arg1
 
-             -- arg2' :: arg2_sigma
-             -- wrap_a :: a2_ty "->" arg2_sigma
-       ; return (OpApp (mkLHsWrap wrap1 arg1')
-                       op' fix
-                       (mkLHsWrapCo co_a arg2')) }
+       ; return (OpApp (mkLHsWrap wrap1 arg1') op' fix arg2') }
 
   | (L loc (HsRecFld (Ambiguous lbl _))) <- op
   , Just sig_ty <- obviousSig (unLoc arg1)

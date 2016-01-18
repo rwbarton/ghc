@@ -164,7 +164,7 @@ matchExpectedFunTys herald arity orig_ty thing_inside
     defer acc_arg_tys n fun_ty
       = do { more_arg_tys <- replicateM n newOpenInferExpType
            ; res_ty       <- newOpenInferExpType
-           ; result <- thing_inside (reverse acc_arg_tys ++ more_arg_tys) res_ty
+           ; result       <- thing_inside (reverse acc_arg_tys ++ more_arg_tys) res_ty
            ; more_arg_tys <- mapM readExpType more_arg_tys
            ; res_ty       <- readExpType res_ty
            ; let unif_fun_ty = mkFunTys more_arg_tys res_ty
@@ -1354,10 +1354,6 @@ nicer_to_update_tv1 _   SigTv _     = False
         -- variables in preference to ones gotten (say) by
         -- instantiating a polymorphic function with a user-written
         -- type sig
-nicer_to_update_tv1 _   ReturnTv _        = True
-nicer_to_update_tv1 _   _        ReturnTv = False
-        -- ReturnTvs are really holes just begging to be filled in.
-        -- Let's oblige.
 nicer_to_update_tv1 tv1 _     _     = isSystemName (Var.varName tv1)
 
 ----------------
@@ -1369,9 +1365,9 @@ checkTauTvUpdate :: DynFlags
                  -> TcM (Maybe ( TcType        -- possibly-expanded ty
                                , Coercion )) -- :: k2 ~N k1
 --    (checkTauTvUpdate tv ty)
--- We are about to update the TauTv/ReturnTv tv with ty.
+-- We are about to update the TauTv tv with ty.
 -- Check (a) that tv doesn't occur in ty (occurs check)
---       (b) that kind(ty) is a sub-kind of kind(tv)
+--       (b) that kind(ty) matches kind(tv)
 --
 -- We have two possible outcomes:
 -- (1) Return the type to update the type variable with,
@@ -1395,12 +1391,7 @@ checkTauTvUpdate dflags origin t_or_k tv ty
   | otherwise
   = do { ty   <- zonkTcType ty
        ; co_k <- uType kind_origin KindLevel (typeKind ty) (tyVarKind tv)
-       ; if | is_return_tv -> -- ReturnTv: a simple occurs-check is all that we need
-                              -- See Note [ReturnTv] in TcType
-                if tv `elemVarSet` tyCoVarsOfType ty
-                then return Nothing
-                else return (Just (ty, co_k))
-            | defer_me ty ->  -- Quick test
+       ; if | defer_me ty ->  -- Quick test
                 -- Failed quick test so try harder
                 case occurCheckExpand dflags tv ty of
                    OC_OK ty2 | defer_me ty2 -> return Nothing
@@ -1411,7 +1402,6 @@ checkTauTvUpdate dflags origin t_or_k tv ty
     kind_origin   = KindEqOrigin (mkTyVarTy tv) (Just ty) origin (Just t_or_k)
     details       = tcTyVarDetails tv
     info          = mtv_info details
-    is_return_tv  = isReturnTyVar tv
     impredicative = canUnifyWithPolyType dflags details
 
     defer_me :: TcType -> Bool
@@ -1613,16 +1603,16 @@ matchExpectedFunKind num_args_remaining ty = go
       = do { maybe_kind <- readMetaTyVar kvar
            ; case maybe_kind of
                 Indirect fun_kind -> go fun_kind
-                Flexi ->             defer (isReturnTyVar kvar) k }
+                Flexi ->             defer k }
 
     go k@(ForAllTy (Anon arg) res)
       = return (mkNomReflCo k, arg, res)
 
     go other = defer False other
 
-    defer is_return k
-      = do { arg_kind <- new_flexi
-           ; res_kind <- new_flexi
+    defer k
+      = do { arg_kind <- newMetaKindVar
+           ; res_kind <- newMetaKindVar
            ; let new_fun = mkFunTy arg_kind res_kind
                  thing   = mkTypeErrorThingArgs ty num_args_remaining
                  origin  = TypeEqOrigin { uo_actual   = k
@@ -1632,5 +1622,3 @@ matchExpectedFunKind num_args_remaining ty = go
            ; co <- uType origin KindLevel k new_fun
            ; return (co, arg_kind, res_kind) }
       where
-        new_flexi | is_return = newReturnTyVarTy liftedTypeKind
-                  | otherwise = newMetaKindVar
