@@ -10,11 +10,11 @@ module TmOracle (
 
         -- re-exported from PmExpr
         PmExpr(..), PmLit(..), SimpleEq, ComplexEq, PmVarEnv, falsePmExpr,
-        canDiverge, eqPmLit, filterComplex, isNotPmExprOther, runPmPprM,
-        pprPmExprWithParens, lhsExprToPmExpr, hsExprToPmExpr,
+        eqPmLit, filterComplex, isNotPmExprOther, runPmPprM, lhsExprToPmExpr,
+        hsExprToPmExpr, pprPmExprWithParens,
 
         -- the term oracle
-        tmOracle, TmState, initialTmState,
+        tmOracle, TmState, initialTmState, solveOneEq, extendSubst, canDiverge,
 
         -- misc.
         exprDeepLookup, pmLitType, flattenPmVarEnv
@@ -141,6 +141,19 @@ extendSubstAndSolve x e (standby, (unhandled, env))
     -- See Note [Representation of Term Equalities] in deSugar/Check.hs
     (changed, unchanged) = partitionWith (substComplexEq x e) standby
     new_incr_state       = (unchanged, (unhandled, Map.insert x e env))
+
+
+-- | When we know that a variable is fresh, we do not actually have to
+-- check whether anything changes, we know that nothing does. Hence,
+-- `extendSubst` simply extends the substitution, unlike what
+-- `extendSubstAndSolve` does.
+extendSubst :: Id -> PmExpr -> TmState -> TmState
+extendSubst x e (standby, (unhandled, env))
+  | isNotPmExprOther simpl_e
+  = (standby, (unhandled, Map.insert x simpl_e env))
+  | otherwise = (standby, (True, env))
+  where
+    simpl_e = fst $ simplifyPmExpr $ exprDeepLookup env e
 
 -- | Simplify a complex equality.
 simplifyComplexEq :: ComplexEq -> ComplexEq
