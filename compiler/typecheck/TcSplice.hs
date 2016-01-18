@@ -138,9 +138,9 @@ import GHC.Exts         ( unsafeCoerce# )
 ************************************************************************
 -}
 
-tcTypedBracket   :: HsBracket Name -> TcRhoType -> TcM (HsExpr TcId)
-tcUntypedBracket :: HsBracket Name -> [PendingRnSplice] -> TcRhoType -> TcM (HsExpr TcId)
-tcSpliceExpr     :: HsSplice Name  -> TcRhoType -> TcM (HsExpr TcId)
+tcTypedBracket   :: HsBracket Name -> ExpRhoType -> TcM (HsExpr TcId)
+tcUntypedBracket :: HsBracket Name -> [PendingRnSplice] -> ExpRhoType -> TcM (HsExpr TcId)
+tcSpliceExpr     :: HsSplice Name  -> ExpRhoType -> TcM (HsExpr TcId)
         -- None of these functions add constraints to the LIE
 
 -- runQuasiQuoteExpr :: HsQuasiQuote RdrName -> RnM (LHsExpr RdrName)
@@ -174,7 +174,7 @@ tcTypedBracket brack@(TExpBr expr) res_ty
                                 tcInferRhoNC expr
                                 -- NC for no context; tcBracket does that
 
-       ; meta_ty <- tcTExpTy expr_ty
+       ; (meta_ty, expr_ty) <- tcTExpTy expr_ty
        ; ps' <- readMutVar ps_ref
        ; texpco <- tcLookupId unsafeTExpCoerceName
        ; tcWrapResultO (Shouldn'tHappenOrigin "TExpBr")
@@ -184,7 +184,7 @@ tcTypedBracket brack@(TExpBr expr) res_ty
 tcTypedBracket other_brack _
   = pprPanic "tcTypedBracket" (ppr other_brack)
 
--- tcUntypedBracket :: HsBracket Name -> [PendingRnSplice] -> TcRhoType -> TcM (HsExpr TcId)
+-- tcUntypedBracket :: HsBracket Name -> [PendingRnSplice] -> ExpRhoType -> TcM (HsExpr TcId)
 tcUntypedBracket brack ps res_ty
   = do { traceTc "tc_bracket untyped" (ppr brack $$ ppr ps)
        ; ps' <- mapM tcPendingSplice ps
@@ -217,12 +217,19 @@ tcPendingSplice (PendingRnSplice flavour splice_name expr)
                        UntypedDeclSplice -> decsQTyConName
 
 ---------------
--- Takes a type tau and returns the type Q (TExp tau)
-tcTExpTy :: TcType -> TcM TcType
-tcTExpTy tau
-  = do { q    <- tcLookupTyCon qTyConName
+-- Takes an expected type and returns the type Q (TExp tau), and tau itself
+tcTExpTy :: ExpRhoType -> TcM (TcType, TcType)
+tcTExpTy exp_ty
+  = do { exp_ty <- expTypeToType exp_ty
+       ; unless (isTauTy exp_ty) $ addErr (err_msg exp_ty)
+       ; q    <- tcLookupTyCon qTyConName
        ; texp <- tcLookupTyCon tExpTyConName
-       ; return (mkTyConApp q [mkTyConApp texp [tau]]) }
+       ; return (mkTyConApp q [mkTyConApp texp [exp_ty]], exp_ty) }
+  where
+    err_msg ty
+      = vcat [ text "Illegal polytype:" <+> ppr ty
+             , text "The type of a Typed Template Haskell expression must" <+>
+               text "not have any quantification." ]
 
 quotationCtxtDoc :: HsBracket Name -> SDoc
 quotationCtxtDoc br_body
@@ -445,11 +452,11 @@ tcSpliceExpr splice _
   = pprPanic "tcSpliceExpr" (ppr splice)
 
 tcNestedSplice :: ThStage -> PendingStuff -> Name
-                -> LHsExpr Name -> TcRhoType -> TcM (HsExpr Id)
+                -> LHsExpr Name -> ExpRhoType -> TcM (HsExpr Id)
     -- See Note [How brackets and nested splices are handled]
     -- A splice inside brackets
 tcNestedSplice pop_stage (TcPending ps_var lie_var) splice_name expr res_ty
-  = do { meta_exp_ty <- tcTExpTy res_ty
+  = do { (meta_exp_ty, res_ty) <- tcTExpTy res_ty
        ; expr' <- setStage pop_stage $
                   setConstraintVar lie_var $
                   tcMonoExpr expr (mkCheckExpType meta_exp_ty)
@@ -464,11 +471,11 @@ tcNestedSplice pop_stage (TcPending ps_var lie_var) splice_name expr res_ty
 tcNestedSplice _ _ splice_name _ _
   = pprPanic "tcNestedSplice: rename stage found" (ppr splice_name)
 
-tcTopSplice :: LHsExpr Name -> TcRhoType -> TcM (HsExpr Id)
+tcTopSplice :: LHsExpr Name -> ExpRhoType -> TcM (HsExpr Id)
 tcTopSplice expr res_ty
   = do { -- Typecheck the expression,
          -- making sure it has type Q (T res_ty)
-         meta_exp_ty <- tcTExpTy res_ty
+         (meta_exp_ty, res_ty) <- tcTExpTy res_ty
        ; zonked_q_expr <- tcTopSpliceExpr Typed $
                           tcMonoExpr expr (mkCheckExpType meta_exp_ty)
 
@@ -484,7 +491,7 @@ tcTopSplice expr res_ty
          -- These steps should never fail; this is a *typed* splice
        ; addErrCtxt (spliceResultDoc expr) $ do
        { (exp3, _fvs) <- rnLExpr expr2
-       ; exp4 <- tcMonoExpr exp3 res_ty
+       ; exp4 <- tcMonoExpr exp3 (mkCheckingExpType res_ty)
        ; return (unLoc exp4) } }
 
 {-

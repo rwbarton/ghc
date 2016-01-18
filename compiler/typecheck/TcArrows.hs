@@ -78,15 +78,16 @@ Note that
 -}
 
 tcProc :: InPat Name -> LHsCmdTop Name          -- proc pat -> expr
-       -> TcRhoType                             -- Expected type of whole proc expression
+       -> ExpRhoType                            -- Expected type of whole proc expression
        -> TcM (OutPat TcId, LHsCmdTop TcId, TcCoercion)
 
 tcProc pat cmd exp_ty
   = newArrowScope $
-    do  { (co, (exp_ty1, res_ty)) <- matchExpectedAppTy exp_ty
+    do  { exp_ty <- expTypeToType exp_ty  -- no higher-rank stuff with arrows
+        ; (co, (exp_ty1, res_ty)) <- matchExpectedAppTy exp_ty
         ; (co1, (arr_ty, arg_ty)) <- matchExpectedAppTy exp_ty1
         ; let cmd_env = CmdEnv { cmd_arr = arr_ty }
-        ; (pat', cmd') <- tcPat ProcExpr pat arg_ty $
+        ; (pat', cmd') <- tcPat ProcExpr pat (mkCheckExpType arg_ty) $
                           tcCmdTop cmd_env cmd (unitTy, res_ty)
         ; let res_co = mkTcTransCo co
                          (mkTcAppCo co1 (mkTcNomReflCo res_ty))
@@ -150,7 +151,8 @@ tc_cmd env in_cmd@(HsCmdCase scrut matches) (stk, res_ty)
   where
     match_ctxt = MC { mc_what = CaseAlt,
                       mc_body = mc_body }
-    mc_body body res_ty' = tcCmd env body (stk, res_ty')
+    mc_body body res_ty' = do { res_ty' <- expTypeToType res_ty'
+                              ; tcCmd env body (stk, res_ty') }
 
 tc_cmd env (HsCmdIf Nothing pred b1 b2) res_ty    -- Ordinary 'if'
   = do  { pred' <- tcMonoExpr pred boolTy
@@ -245,8 +247,8 @@ tc_cmd env
     do  { (co, arg_tys, cmd_stk') <- matchExpectedCmdArgs n_pats cmd_stk
 
                 -- Check the patterns, and the GRHSs inside
-        ; (pats', grhss') <- setSrcSpan mtch_loc                $
-                             tcPats LambdaExpr pats arg_tys     $
+        ; (pats', grhss') <- setSrcSpan mtch_loc                                 $
+                             tcPats LambdaExpr pats (map mkCheckExpType arg_tys) $
                              tc_grhss grhss cmd_stk' res_ty
 
         ; let match' = L mtch_loc (Match NonFunBindMatch pats' Nothing grhss')
@@ -356,7 +358,7 @@ tcArrDoStmt env _ (BodyStmt rhs _ _ _) res_ty thing_inside
 
 tcArrDoStmt env ctxt (BindStmt pat rhs _ _) res_ty thing_inside
   = do  { (rhs', pat_ty) <- tc_arr_rhs env rhs
-        ; (pat', thing)  <- tcPat (StmtCtxt ctxt) pat pat_ty $
+        ; (pat', thing)  <- tcPat (StmtCtxt ctxt) pat (mkCheckExpType pat_ty) $
                             thing_inside res_ty
         ; return (mkBindStmt pat' rhs', thing) }
 

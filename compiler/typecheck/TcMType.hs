@@ -32,7 +32,8 @@ module TcMType (
 
   --------------------------------
   -- Expected types
-  ExpType, mkCheckExpType, newOpenInferExpType, readExpType, writeExpType,
+  ExpType, ExpSigmaType, ExpRhoType,
+  mkCheckExpType, newOpenInferExpType, readExpType, writeExpType,
   toMonoExpType, checkingExpType_maybe, checkingExpType
 
   --------------------------------
@@ -311,6 +312,9 @@ data ExpType = Check TcType
              | Infer Unique  -- ^ for debugging only
                      Kind
                      (IORef (Maybe TcType))
+
+type ExpSigmaType = ExpType
+type ExpRhoType   = ExpType
 
 instance Outputable ExpType where
   ppr (Check ty) = ppr ty

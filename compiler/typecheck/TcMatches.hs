@@ -70,7 +70,7 @@ See Note [sig_tau may be polymorphic] in TcPat.
 
 tcMatchesFun :: Name
              -> MatchGroup Name (LHsExpr Name)
-             -> ExpType     -- Expected type of function
+             -> ExpRhoType     -- Expected type of function
              -> TcM (HsWrapper, MatchGroup TcId (LHsExpr TcId))
                                 -- Returns type of body
 tcMatchesFun fun_name matches exp_ty
@@ -108,7 +108,7 @@ tcMatchesCase :: (Outputable (body Name)) =>
                  TcMatchCtxt body                             -- Case context
               -> TcSigmaType                                  -- Type of scrutinee
               -> MatchGroup Name (Located (body Name))        -- The case alternatives
-              -> ExpType                                      -- Type of whole case expressions
+              -> ExpRhoType                                   -- Type of whole case expressions
               -> TcM (MatchGroup TcId (Located (body TcId)))
                  -- Translated alternatives
                  -- wrapper goes from MatchGroup's ty to expected ty
@@ -120,7 +120,7 @@ tcMatchesCase ctxt scrut_ty matches res_ty
 tcMatchLambda :: SDoc -- see Note [Herald for matchExpectedFunTys] in TcUnify
               -> TcMatchCtxt HsExpr
               -> MatchGroup Name (LHsExpr Name)
-              -> ExpType   -- deeply skolemised
+              -> ExpRhoType   -- deeply skolemised
               -> TcM (HsWrapper, [TcSigmaType], MatchGroup TcId (LHsExpr TcId))
                      -- also returns the argument types
 tcMatchLambda herald match_ctxt match res_ty
@@ -202,8 +202,8 @@ tauifyMultipleMatches group exp_ty
 -- must already be tauified. See Note [Case branches must be taus] and
 -- tauifyMultipleMatches
 tcMatches :: (Outputable (body Name)) => TcMatchCtxt body
-          -> [ExpType]      -- Expected pattern types
-          -> ExpType        -- Expected result-type of the Match.
+          -> [ExpSigmaType]      -- Expected pattern types
+          -> ExpRhoType          -- Expected result-type of the Match.
           -> MatchGroup Name (Located (body Name))
           -> TcM (MatchGroup TcId (Located (body TcId)))
 
@@ -211,7 +211,7 @@ data TcMatchCtxt body   -- c.f. TcStmtCtxt, also in this module
   = MC { mc_what :: HsMatchContext Name,        -- What kind of thing this is
          mc_body :: Located (body Name)         -- Type checker for a body of
                                                 -- an alternative
-                 -> TcRhoType
+                 -> ExpRhoType
                  -> TcM (Located (body TcId)) }
 
 tcMatches ctxt pat_tys rhs_ty (MG { mg_alts = L l matches
@@ -226,8 +226,8 @@ tcMatches ctxt pat_tys rhs_ty (MG { mg_alts = L l matches
 
 -------------
 tcMatch :: (Outputable (body Name)) => TcMatchCtxt body
-        -> [ExpType]        -- Expected pattern types
-        -> ExpType          -- Expected result-type of the Match.
+        -> [ExpSigmaType]        -- Expected pattern types
+        -> ExpRhoType            -- Expected result-type of the Match.
         -> LMatch Name (Located (body Name))
         -> TcM (LMatch TcId (Located (body TcId)))
 
@@ -255,7 +255,7 @@ tcMatch ctxt pat_tys rhs_ty match
             m_ctxt     -> addErrCtxt (pprMatchInCtxt m_ctxt match) thing_inside
 
 -------------
-tcGRHSs :: TcMatchCtxt body -> GRHSs Name (Located (body Name)) -> ExpType
+tcGRHSs :: TcMatchCtxt body -> GRHSs Name (Located (body Name)) -> ExpRhoType
         -> TcM (GRHSs TcId (Located (body TcId)))
 
 -- Notice that we pass in the full res_ty, so that we get
@@ -272,7 +272,7 @@ tcGRHSs ctxt (GRHSs grhss (L l binds)) res_ty
         ; return (GRHSs grhss' (L l binds')) }
 
 -------------
-tcGRHS :: TcMatchCtxt body -> ExpType -> GRHS Name (Located (body Name))
+tcGRHS :: TcMatchCtxt body -> ExpRhoType -> GRHS Name (Located (body Name))
        -> TcM (GRHS TcId (Located (body TcId)))
 
 tcGRHS ctxt res_ty (GRHS guards rhs)
@@ -293,7 +293,7 @@ tcGRHS ctxt res_ty (GRHS guards rhs)
 
 tcDoStmts :: HsStmtContext Name
           -> Located [LStmt Name (LHsExpr Name)]
-          -> ExpType
+          -> ExpRhoType
           -> TcM (HsExpr TcId)          -- Returns a HsDo
 tcDoStmts ListComp (L l stmts) res_ty
   = do  { (co, elt_ty) <- matchExpectedListTy res_ty
@@ -323,7 +323,7 @@ tcDoStmts MonadComp (L l stmts) res_ty
 
 tcDoStmts ctxt _ _ = pprPanic "tcDoStmts" (pprStmtContext ctxt)
 
-tcBody :: LHsExpr Name -> ExpType -> TcM (LHsExpr TcId)
+tcBody :: LHsExpr Name -> ExpRhoType -> TcM (LHsExpr TcId)
 tcBody body res_ty
   = do  { traceTc "tcBody" (ppr res_ty)
         ; tcMonoExpr body res_ty
@@ -343,14 +343,14 @@ type TcCmdStmtChecker  = TcStmtChecker HsCmd
 type TcStmtChecker body
   =  forall thing. HsStmtContext Name
                 -> Stmt Name (Located (body Name))
-                -> ExpType                    -- Result type for comprehension
-                -> (ExpType -> TcM thing)     -- Checker for what follows the stmt
+                -> ExpRhoType                 -- Result type for comprehension
+                -> (ExpRhoType -> TcM thing)  -- Checker for what follows the stmt
                 -> TcM (Stmt TcId (Located (body TcId)), thing)
 
 tcStmts :: (Outputable (body Name)) => HsStmtContext Name
         -> TcStmtChecker body   -- NB: higher-rank type
         -> [LStmt Name (Located (body Name))]
-        -> ExpType
+        -> ExpRhoType
         -> TcM [LStmt TcId (Located (body TcId))]
 tcStmts ctxt stmt_chk stmts res_ty
   = do { (stmts', _) <- tcStmtsAndThen ctxt stmt_chk stmts res_ty $
@@ -360,8 +360,8 @@ tcStmts ctxt stmt_chk stmts res_ty
 tcStmtsAndThen :: (Outputable (body Name)) => HsStmtContext Name
                -> TcStmtChecker body    -- NB: higher-rank type
                -> [LStmt Name (Located (body Name))]
-               -> ExpType
-               -> (ExpType -> TcM thing)
+               -> ExpRhoType
+               -> (ExpRhoType -> TcM thing)
                -> TcM ([LStmt TcId (Located (body TcId))], thing)
 
 -- Note the higher-rank type.  stmt_chk is applied at different
@@ -547,7 +547,7 @@ tcMcStmt :: TcExprStmtChecker
 
 tcMcStmt _ (LastStmt body noret return_op) res_ty thing_inside
   = do  { (body', return_op')
-            <- tcSyntaxOp MCompOrigin return_op [SynAny] res_ty $
+            <- tcSyntaxOp MCompOrigin return_op [SynRho] res_ty $
                \ [a_ty] ->
                tcMonoExprNC body a_ty
         ; thing      <- thing_inside (panic "tcMcStmt: thing_inside")
@@ -563,7 +563,7 @@ tcMcStmt ctxt (BindStmt pat rhs bind_op fail_op) res_ty thing_inside
            -- (>>=) :: rhs_ty -> (pat_ty -> new_res_ty) -> res_ty
 = do   { ((rhs', pat', thing, new_res_ty), bind_op')
             <- tcSyntaxOp MCompOrigin bind_op
-                          [SynAny, SynFun SynAny SynAny] res_ty $
+                          [SynRho, SynFun SynAny SynRho] res_ty $
                \ [rhs_ty, pat_ty, new_res_ty] ->
                do { rhs' <- tcMonoExprNM rhs rhs_ty
                   ; (pat', thing) <- tcPat (StmtCtxt ctxt) pat pat_ty $
@@ -586,10 +586,11 @@ tcMcStmt _ (BodyStmt rhs then_op guard_op _) res_ty thing_inside
           --    then_op  :: rhs_ty -> new_res_ty -> res_ty
           -- Where test_ty is, for example, Bool
         ; ((thing, rhs', rhs_ty, guard_op'), then_op')
-            <- tcSyntaxOp MCompOrigin then_op [SynAny, SynAny] res_ty $
+            <- tcSyntaxOp MCompOrigin then_op [SynRho, SynRho] res_ty $
                \ [rhs_ty, new_res_ty] ->
                do { (rhs', guard_op')
-                      <- tcSyntaxOp MCompOrigin guard_op [SynAny] rhs_ty $
+                      <- tcSyntaxOp MCompOrigin guard_op [SynAny]
+                                    (mkCheckExpType rhs_ty) $
                          \ [test_ty] ->
                          tcMonoExpr rhs test_ty
                   ; rhs_ty <- readExpType rhs_ty
@@ -663,7 +664,7 @@ tcMcStmt ctxt (TransStmt { trS_stmts = stmts, trS_bndrs = bindersMap
                 -- 'return' is only used for the binders, so we know its type.
                 --   return :: (a,b,c,..) -> m (a,b,c,..)
                 ; (_, return_op') <- tcSyntaxOp MCompOrigin return_op
-                                       [SynType (mkBigCoreVarTupTy bndr_ids)]
+                                       [synKnownType (mkBigCoreVarTupTy bndr_ids)]
                                        res_ty' $ \ _ -> return ()
 
                 ; return (bndr_ids, by', return_op') }
@@ -672,8 +673,8 @@ tcMcStmt ctxt (TransStmt { trS_stmts = stmts, trS_bndrs = bindersMap
        -- (>>=) :: m2 (n (a,b,c)) -> ( n (a,b,c) -> new_res_ty ) -> res_ty
        ; new_res_ty <- newFlexiTyVarTy liftedTypeKind
        ; (_, bind_op')  <- tcSyntaxOp MCompOrigin bind_op
-                             [ SynType using_res_ty
-                             , SynType (n_app `mkFunTy` new_res_ty) ]
+                             [ synKnownType using_res_ty
+                             , synKnownType (n_app `mkFunTy` new_res_ty) ]
                              res_ty $ \ _ -> return ()
 
        --------------- Typecheck the 'fmap' function -------------
@@ -762,8 +763,8 @@ tcMcStmt ctxt (ParStmt bndr_stmts_s mzip_op bind_op) res_ty thing_inside
 
        ; ((blocks', thing), bind_op')
            <- tcSyntaxOp MCompOrigin bind_op
-                         [ SynType (m_ty `mkAppTy` tuple_ty)
-                         , SynFun (SynType tuple_ty) SynAny ] res_ty $
+                         [ synKnownType (m_ty `mkAppTy` tuple_ty)
+                         , SynFun (SynType tuple_ty) SynRho ] res_ty $
               \ [inner_res_ty] ->
               loop m_ty (mkCheckExpType inner_res_ty) tup_tys bndr_stmts_s
 
@@ -773,7 +774,7 @@ tcMcStmt ctxt (ParStmt bndr_stmts_s mzip_op bind_op) res_ty thing_inside
     mk_tuple_ty tys = foldr1 (\tn tm -> mkBoxedTupleTy [tn, tm]) tys
 
        -- loop :: Type                                  -- m_ty
-       --      -> ExpType                               -- inner_res_ty
+       --      -> ExpRhoType                            -- inner_res_ty
        --      -> [TcType]                              -- tup_tys
        --      -> [ParStmtBlock Name]
        --      -> TcM ([([LStmt TcId], [TcId])], thing)
@@ -790,7 +791,7 @@ tcMcStmt ctxt (ParStmt bndr_stmts_s mzip_op bind_op) res_ty thing_inside
                       ; let tup_ty = mkBigCoreVarTupTy ids
                       ; (_, return_op') <-
                           tcSyntaxOp MCompOrigin return_op
-                                     [SynType tup_ty] m_tup_ty' $
+                                     [synKnownType tup_ty] m_tup_ty' $
                                      \ _ -> return ()
                       ; (pairs', thing) <- loop m_ty inner_res_ty tup_tys_in pairs
                       ; return (ids, return_op', pairs', thing) }
@@ -820,7 +821,7 @@ tcDoStmt ctxt (BindStmt pat rhs bind_op fail_op) res_ty thing_inside
                 -- in full generality; see Trac #1537
 
           ((rhs', pat', new_res_ty, thing), bind_op')
-            <- tcSyntaxOp DoOrigin bind_op [SynAny, SynFun SynAny SynAny] res_ty $
+            <- tcSyntaxOp DoOrigin bind_op [SynRho, SynFun SynAny SynRho] res_ty $
                 \ [rhs_ty, pat_ty, new_res_ty] ->
                 do { rhs' <- tcMonoExprNC rhs (mkCheckExpType rhs_ty)
                    ; (pat', thing) <- tcPat (StmtCtxt ctxt) pat pat_ty $
@@ -834,18 +835,13 @@ tcDoStmt ctxt (BindStmt pat rhs bind_op fail_op) res_ty thing_inside
         ; return (BindStmt pat' rhs' bind_op' fail_op', thing) }
 
 tcDoStmt ctxt (ApplicativeStmt pairs mb_join _) res_ty thing_inside
-  = do  {
-        ; (mb_join', rhs_ty) <- case mb_join of
-            Nothing -> return (Nothing, res_ty)
+  = do  { let tc_app_stmts ty = tcApplicativeStmts ctxt pairs ty thing_inside
+        ; ((pairs', body_ty, thing), mb_join') <- case mb_join of
+            Nothing -> (, Nothing) <$> tc_app_stmts res_ty
             Just join_op ->
-              do { (rhs_ty, join_op')
-                     <- tcSyntaxOp DoOrigin join_op [SynAny] res_ty $
-                        \ [rhs_ty] ->
-                        return (mkCheckExpType rhs_ty)
-                 ; return (Just join_op', rhs_ty) }
-
-        ; (pairs', body_ty, thing) <-
-            tcApplicativeStmts ctxt pairs rhs_ty thing_inside
+              second Just <$>
+              (tcSyntaxOp DoOrigin join_op [SynRho] res_ty $
+               \ [rhs_ty] -> tc_app_stmts (mkCheckExpType rhs_ty)
 
         ; return (ApplicativeStmt pairs' mb_join' body_ty, thing) }
 
@@ -855,7 +851,7 @@ tcDoStmt _ (BodyStmt rhs then_op _ _) res_ty thing_inside
           rhs_ty     <- newFlexiTyVarTy liftedTypeKind
         ; new_res_ty <- newFlexiTyVarTy liftedTypeKind
         ; ((rhs', rhs_ty, thing), then_op')
-            <- tcSyntaxOp DoOrigin then_op [SynAny, SynAny] res_ty $
+            <- tcSyntaxOp DoOrigin then_op [SynRho, SynRho] res_ty $
                \ [rhs_ty, new_res_ty] ->
                do { rhs' <- tcMonoExprNC rhs rhs_ty
                   ; thing <- thing_inside new_res_ty
@@ -893,14 +889,13 @@ tcDoStmt ctxt (RecStmt { recS_stmts = stmts, recS_later_ids = later_names
                \ _ -> return ()
         ; mfix_res_ty <- readExpType mfix_res_ty
 
-             -- we could perhaps do better here by using a new ExpType
-        ; new_res_ty <- newFlexiTyVarTy liftedTypeKind
-        ; (_, bind_op') <- tcSyntaxOp DoOrigin bind_op
-                                 [ SynType mfix_res_ty
-                                 , SynType (mkFunTy tup_ty new_res_ty) ]
-                                 res_ty $ \_ -> return ()
-
-        ; thing <- thing_inside new_res_ty
+        ; (thing, bind_op')
+            <- tcSyntaxOp DoOrigin bind_op
+                          [ SynType mfix_res_ty
+                          , SynType tup_ty `SynFun` SynRho ]
+                          res_ty $
+               \ [new_res_ty] ->
+               thing_inside new_res_ty
 
         ; let rec_ids = takeList rec_names tup_ids
         ; later_ids <- tcLookupLocalIds later_names
@@ -1007,8 +1002,8 @@ join :: tn -> res_ty
 tcApplicativeStmts
   :: HsStmtContext Name
   -> [(HsExpr Name, ApplicativeArg Name Name)]
-  -> ExpType                            -- rhs_ty
-  -> (ExpType -> TcM t)                 -- thing_inside
+  -> ExpRhoType                         -- rhs_ty
+  -> (ExpRhoType -> TcM t)              -- thing_inside
   -> TcM ([(HsExpr TcId, ApplicativeArg TcId TcId)], Type, t)
 
 tcApplicativeStmts ctxt pairs rhs_ty thing_inside

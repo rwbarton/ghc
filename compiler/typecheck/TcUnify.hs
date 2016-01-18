@@ -12,12 +12,12 @@ module TcUnify (
   -- Full-blown subsumption
   tcWrapResult, tcWrapResultO, tcSkolemise,
   tcSubTypeHR, tcSubType, tcSubTypeO, tcSubType_NC, tcSubTypeDS, tcSubTypeDS_O,
-  tcSubTypeDS_NC, tcSubTypeDS_NC_O, tcSubTypeHR_ExpType,
+  tcSubTypeDS_NC, tcSubTypeDS_NC_O, tcSubTypeET,
   checkConstraints, buildImplication, buildImplicationFor,
 
   -- Various unifications
   unifyType_, unifyType, unifyTheta, unifyKind, noThing,
-  uType,
+  uType, unifyExpType,
 
   --------------------------------
   -- Holes
@@ -108,21 +108,13 @@ namely:
 -- Use this one when you have an "expected" type.
 matchExpectedFunTys :: SDoc   -- See Note [Herald for matchExpectedFunTys]
                     -> Arity
-                    -> ExpType  -- deeply skolemised
-                    -> ([ExpType] -> ExpType -> TcM a)
+                    -> ExpRhoType  -- deeply skolemised
+                    -> ([ExpSigmaType] -> ExpRhoType -> TcM a)
                           -- must fill in these ExpTypes here
                     -> TcM (a, HsWrapper)
 -- If    matchExpectedFunTys n ty = (_, wrap)
 -- then  wrap : (t1 -> ... -> tn -> ty_r) "->" ty,
 --   where [t1, ..., tn], ty_r are passed to the thing_inside
-
--- This function is always called with a deeply skolemised expected result
--- type. This means that matchActualFunTys will never actually instantiate,
--- and the returned HsWrapper will be reversible (that is, just a coercion).
--- So we just piggyback on matchActualFunTys. This is just a bit dodgy, but
--- it's much better than duplicating all the logic in matchActualFunTys.
--- To keep expected/actual working out properly, we tell matchActualFunTys
--- to swap the arguments to unifyType.
 matchExpectedFunTys herald arity orig_ty thing_inside
   = case orig_ty of
       Check ty -> go [] arity ty
@@ -199,26 +191,30 @@ matchExpectedFunTys herald arity orig_ty thing_inside
 
 -- Like 'matchExpectedFunTys', but used when you have an "actual" type,
 -- for example in function application
-matchActualFunTys :: SDoc   -- See Note [Herald for matchExpectedFunTys]
+matchActualFunTys :: Outputable a
+                  => SDoc   -- See Note [Herald for matchExpectedFunTys]
                   -> CtOrigin
+                  -> Maybe a   -- the thing with type TcSigmaType
                   -> Arity
                   -> TcSigmaType
                   -> TcM (HsWrapper, [TcSigmaType], TcSigmaType)
 -- If    matchActualFunTys n ty = (wrap, [t1,..,tn], ty_r)
 -- then  wrap : ty "->" (t1 -> ... -> tn -> ty_r)
-matchActualFunTys herald ct_orig arity ty
-  = matchActualFunTysPart herald ct_orig arity ty [] arity
+matchActualFunTys herald ct_orig mb_thing arity ty
+  = matchActualFunTysPart herald ct_orig mb_thing arity ty [] arity
 
 -- | Variant of 'matchActualFunTys' that works when supplied only part
 -- (that is, to the right of some arrows) of the full function type
-matchActualFunTysPart :: SDoc -- See Note [Herald for matchExpectedFunTys]
+matchActualFunTysPart :: Outputable a
+                      => SDoc -- See Note [Herald for matchExpectedFunTys]
                       -> CtOrigin
+                      -> Maybe a  -- the thing with type TcSigmaType
                       -> Arity
                       -> TcSigmaType
                       -> [TcSigmaType] -- reversed args. See (*) below.
                       -> Arity   -- overall arity of the function, for errs
                       -> TcM (HsWrapper, [TcSigmaType], TcSigmaType)
-matchActualFunTysPart swap_tys herald ct_orig arity orig_ty
+matchActualFunTysPart swap_tys herald ct_orig mb_thing arity orig_ty
                       orig_old_args full_arity
   = go arity orig_old_args orig_ty
 -- Does not allocate unnecessary meta variables: if the input already is
@@ -300,7 +296,7 @@ matchActualFunTysPart swap_tys herald ct_orig arity orig_ty
       = do { arg_tys <- replicateM n newOpenFlexiTyVarTy
            ; res_ty  <- new_flexi
            ; let unif_fun_ty = mkFunTys arg_tys res_ty
-           ; co <- unifyType noThing fun_ty unif_fun_ty
+           ; co <- unifyType mb_thing fun_ty unif_fun_ty
            ; return (mkWpCastN co, arg_tys, res_ty) }
 
     ------------
@@ -522,12 +518,12 @@ skolemising the type.
 tcSubTypeHR :: Outputable a
             => CtOrigin    -- ^ of the actual type
             -> Maybe a     -- ^ If present, it has type ty_actual
-            -> TcSigmaType -> ExpType -> TcM HsWrapper
+            -> TcSigmaType -> ExpRhoType -> TcM HsWrapper
 tcSubTypeHR orig = tcSubTypeDS_NC_O orig GenSigCtxt
 
 tcSubType :: Outputable a
           => UserTypeCtxt -> Maybe a  -- ^ If present, it has type ty_actual
-          -> TcSigmaType -> ExpType -> TcM HsWrapper
+          -> TcSigmaType -> ExpSigmaType -> TcM HsWrapper
 -- Checks that actual <= expected
 -- Returns HsWrapper :: actual ~ expected
 tcSubType ctxt maybe_thing ty_actual ty_expected
@@ -538,11 +534,19 @@ tcSubType ctxt maybe_thing ty_actual ty_expected
                           , uo_thing    = mkErrorThing <$> maybe_thing }
 
 
+-- | This is like 'tcSubType' but accepts an 'ExpType' as the /actual/ type.
+-- You probably want this only when looking at patterns, never expressions.
+tcSubTypeET :: CtOrigin -> ExpSigmaType -> TcSigmaType -> TcM HsWrapper
+tcSubTypeET orig ty_actual@(Infer {}) ty_expected
+  = mkWpCastN . mkTcSymCo <$> uExpType orig ty_expected ty_actual
+tcSubTypeET orig (Check ty_actual) ty_expected
+  = tcSubTypeO orig GenSigCtxt ty_actual (mkCheckExpType ty_expected)
+
 tcSubTypeO :: Outputable a
            => CtOrigin      -- ^ of the actual type
            -> UserTypeCtxt  -- ^ of the expected type
            -> TcSigmaType
-           -> ExpType
+           -> ExpSigmaType
            -> TcM HsWrapper
 tcSubTypeO origin ctxt ty_actual ty_expected
   = addSubTypeCtxt ty_actual ty_expected $
@@ -553,7 +557,7 @@ tcSubTypeO origin ctxt ty_actual ty_expected
        ; tc_sub_type origin origin ctxt ty_actual ty_expected }
 
 tcSubTypeDS :: Outputable a => UserTypeCtxt -> Maybe a  -- ^ has type ty_actual
-            -> TcSigmaType -> ExpType -> TcM HsWrapper
+            -> TcSigmaType -> ExpRhoType -> TcM HsWrapper
 -- Just like tcSubType, but with the additional precondition that
 -- ty_expected is deeply skolemised (hence "DS")
 tcSubTypeDS ctxt m_expr ty_actual ty_expected
@@ -564,7 +568,7 @@ tcSubTypeDS ctxt m_expr ty_actual ty_expected
 -- the "actual" type
 tcSubTypeDS_O :: Outputable a
               => CtOrigin -> UserTypeCtxt
-              -> Maybe a -> TcSigmaType -> ExpType
+              -> Maybe a -> TcSigmaType -> ExpRhoType
               -> TcM HsWrapper
 tcSubTypeDS_O orig ctxt maybe_thing ty_actual ty_expected
   = addSubTypeCtxt ty_actual ty_expected $
@@ -596,7 +600,7 @@ addSubTypeCtxt ty_actual ty_expected thing_inside
 -- The "_NC" variants do not add a typechecker-error context;
 -- the caller is assumed to do that
 
-tcSubType_NC :: UserTypeCtxt -> TcSigmaType -> ExpType -> TcM HsWrapper
+tcSubType_NC :: UserTypeCtxt -> TcSigmaType -> ExpSigmaType -> TcM HsWrapper
 tcSubType_NC ctxt ty_actual ty_expected
   = do { traceTc "tcSubType_NC" (vcat [pprUserTypeCtxt ctxt, ppr ty_actual, ppr ty_expected])
        ; tc_sub_type origin origin ctxt ty_actual ty_expected }
@@ -608,7 +612,7 @@ tcSubType_NC ctxt ty_actual ty_expected
 tcSubTypeDS_NC :: Outputable a
                => UserTypeCtxt
                -> Maybe a  -- ^ If present, this has type ty_actual
-               -> TcSigmaType -> ExpType -> TcM HsWrapper
+               -> TcSigmaType -> ExpRhoType -> TcM HsWrapper
 tcSubTypeDS_NC ctxt maybe_thing ty_actual ty_expected
   = do { traceTc "tcSubTypeDS_NC" (vcat [pprUserTypeCtxt ctxt, ppr ty_actual, ppr ty_expected])
        ; tcSubTypeDS_NC_O origin ctxt maybe_thing ty_actual ty_expected }
@@ -617,43 +621,27 @@ tcSubTypeDS_NC ctxt maybe_thing ty_actual ty_expected
                           , uo_expected = ty_expected
                           , uo_thing    = mkErrorThing <$> maybe_thing }
 
--- | This is like 'tcSubTypeHR' but accepts an 'ExpType' as the /actual/ type.
--- You probably want this only when looking at patterns, never expressions.
-tcSubTypeHR_ExpType :: CtOrigin -> ExpType -> TcSigmaType -> TcM HsWrapper
-tcSubTypeHR_ExpType orig ty_actual@(Infer _ ki _) ty_expected
-  = do { ki_co <- uType kind_orig KindLevel ki (typeKind ty_expected)
-       ; writeExpType ty_actual (ty_expected `mkCastTy` mkTcSymCo ki_co)
-       ; return idHsWrapper }
-  where
-    kind_orig = KindEqOrigin ty_expected Nothing orig (Just TypeLevel)
-
-tcSubTypeHR_ExpType orig (Check ty_actual) ty_expected
-  = tcSubTypeHR orig noThing ty_actual (mkCheckExpType ty_expected)
-
 tcSubTypeDS_NC_O :: Outputable a
                  => CtOrigin   -- origin used for instantiation only
                  -> UserTypeCtxt
                  -> Maybe a
-                 -> TcSigmaType -> ExpType -> TcM HsWrapper
+                 -> TcSigmaType -> ExpRhoType -> TcM HsWrapper
 -- Just like tcSubType, but with the additional precondition that
 -- ty_expected is deeply skolemised
-tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual ty_expected
-  Infer _ ki _ <- ty_expected
-  = do { ki_co <- uType kind_orig KindLevel (typeKind ty_actual) ki
-       ; writeExpType ty_expected (ty_actual `mkCastTy` ki_co)
-       ; return idHsWrapper }
-  Check ty_expected' <- ty_expected
+tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual ty_expected@(Infer {})
+  = mkWpCastN <$> unifyExpType m_thing ty_actual ty_expected
+tcSubTypeDS_NC_O inst_orig ctxt m_thing ty_actual (Check ty_expected)
   = tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected'
   where
-    kind_orig = KindEqOrigin ty_actual Nothing eq_orig (Just TypeLevel)
     eq_orig = TypeEqOrigin { uo_actual = ty_actual, uo_expected = ty_expected
                            , uo_thing = mkErrorThing <$> m_thing}
 
 ---------------
 tc_sub_type :: CtOrigin   -- origin used when calling uType
             -> CtOrigin   -- origin used when instantiating
-            -> UserTypeCtxt -> TcSigmaType -> ExpType -> TcM HsWrapper
+            -> UserTypeCtxt -> TcSigmaType -> ExpSigmaType -> TcM HsWrapper
 tc_sub_type eq_orig _ ctxt ty_actual et@(Infer _ ki _)
+  = mkWpCastN <$> uExpType eq_orig ty_actual et
   = do { ki_co <- uType kind_orig KindLevel (typeKind ty_actual) ki
        ; writeExpType et (ty_actual `mkCastTy` ki_co) }
   where
@@ -778,13 +766,13 @@ tc_sub_type_ds eq_orig inst_orig ctxt ty_actual ty_expected
 -----------------
 -- needs both un-type-checked (for origins) and type-checked (for wrapping)
 -- expressions
-tcWrapResult :: HsExpr Name -> HsExpr TcId -> TcSigmaType -> ExpType
+tcWrapResult :: HsExpr Name -> HsExpr TcId -> TcSigmaType -> ExpRhoType
              -> TcM (HsExpr TcId)
 tcWrapResult rn_expr = tcWrapResultO (exprCtOrigin rn_expr)
 
 -- | Sometimes we don't have a @HsExpr Name@ to hand, and this is more
 -- convenient.
-tcWrapResultO :: CtOrigin -> HsExpr TcId -> TcSigmaType -> ExpType
+tcWrapResultO :: CtOrigin -> HsExpr TcId -> TcSigmaType -> ExpRhoType
                -> TcM (HsExpr TcId)
 tcWrapResultO orig expr actual_ty res_ty
   = do { traceTc "tcWrapResult" (vcat [ text "Actual:  " <+> ppr actual_ty
@@ -810,7 +798,7 @@ wrapFunResCoercion arg_tys co_fn_res
 -----------------------------------
 -- | Infer a type using a fresh ExpType
 -- See also Note [ExpType] in TcMType
-tcInfer :: (ExpType -> TcM a) -> TcM (a, TcType)
+tcInfer :: (ExpRhoType -> TcM a) -> TcM (a, TcType)
 tcInfer tc_check
   = do { res_ty <- newOpenInferExpType
        ; result <- tc_check res_ty
@@ -956,7 +944,7 @@ unifyType_ :: Outputable a => Maybe a  -- ^ If present, has type 'ty1'
 unifyType_ thing ty1 ty2 = void $ unifyType thing ty1 ty2
 
 unifyType :: Outputable a => Maybe a   -- ^ If present, has type 'ty1'
-          -> TcTauType -> TcTauType -> TcM TcCoercion
+          -> TcTauType -> TcTauType -> TcM TcCoercionN
 -- Actual and expected types
 -- Returns a coercion : ty1 ~ ty2
 unifyType thing ty1 ty2 = uType origin TypeLevel ty1 ty2
@@ -964,24 +952,34 @@ unifyType thing ty1 ty2 = uType origin TypeLevel ty1 ty2
     origin = TypeEqOrigin { uo_actual = ty1, uo_expected = mkCheckExpType ty2
                           , uo_thing  = mkErrorThing <$> thing }
 
+-- | Variant of 'unifyType' that takes an 'ExpType' as its second type
+unifyExpType :: Outputable a => Maybe a
+             -> TcTauType -> ExpType -> TcM TcCoercionN
+unifyExpType mb_thing ty1 ty2
+  = uExpType ty_orig ty1 ty2
+  where
+    ty_orig   = TypeEqOrigin { uo_actual   = ty1
+                             , uo_expected = et
+                             , uo_thing    = mkErrorThing <$> mb_thing }
+
 -- | Use this instead of 'Nothing' when calling 'unifyType' without
 -- a good "thing" (where the "thing" has the "actual" type passed in)
 -- This has an 'Outputable' instance, avoiding amgiguity problems.
 noThing :: Maybe (HsExpr Name)
 noThing = Nothing
 
-unifyKind :: Outputable a => Maybe a -> TcKind -> TcKind -> TcM Coercion
+unifyKind :: Outputable a => Maybe a -> TcKind -> TcKind -> TcM CoercionN
 unifyKind thing ty1 ty2 = uType origin KindLevel ty1 ty2
   where origin = TypeEqOrigin { uo_actual = ty1, uo_expected = mkCheckExpType ty2
                               , uo_thing  = mkErrorThing <$> thing }
 
 ---------------
-unifyPred :: PredType -> PredType -> TcM TcCoercion
+unifyPred :: PredType -> PredType -> TcM TcCoercionN
 -- Actual and expected types
 unifyPred = unifyType noThing
 
 ---------------
-unifyTheta :: TcThetaType -> TcThetaType -> TcM [TcCoercion]
+unifyTheta :: TcThetaType -> TcThetaType -> TcM [TcCoercionN]
 -- Actual and expected types
 unifyTheta theta1 theta2
   = do  { checkTc (equalLength theta1 theta2)
@@ -998,6 +996,16 @@ unifyTheta theta1 theta2
 
 uType is the heart of the unifier.
 -}
+
+uExpType :: CtOrigin -> TcType -> ExpType -> TcM CoercionN
+uExpType orig ty1 et@(Infer _ ki _)
+  = do { ki_co <- uType kind_orig KindLevel (typeKind ty1) ki
+       ; writeExpType et (ty1 `mkCastTy` ki_co)
+       ; return (mkTcNomReflCo ty1 `mkTcCoherenceRightCo` ki_co) }
+  where
+    kind_orig = KindEqOrigin ty1 Nothing orig (Just TypeLevel)
+uExpType orig ty1 (Check ty2)
+  = uType orig TypeLevel ty1 ty2
 
 ------------
 uType, uType_defer

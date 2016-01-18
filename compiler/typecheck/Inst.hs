@@ -342,7 +342,7 @@ cases (the rest are caught in lookupInst).
 -}
 
 newOverloadedLit :: HsOverLit Name
-                 -> ExpType   -- must be a rho-type; deeply instantiated/skolemised
+                 -> ExpRhoType
                  -> TcM (HsOverLit TcId)
 newOverloadedLit
   lit@(OverLit { ol_val = val, ol_rebindable = rebindable }) res_ty res_orig
@@ -370,7 +370,7 @@ newOverloadedLit
 -- newOverloadedLit in TcUnify
 newNonTrivialOverloadedLit :: CtOrigin
                            -> HsOverLit Name
-                           -> ExpType
+                           -> ExpRhoType
                            -> TcM (HsOverLit TcId)
 newNonTrivialOverloadedLit orig
   lit@(OverLit { ol_val = val, ol_witness = meth_name
