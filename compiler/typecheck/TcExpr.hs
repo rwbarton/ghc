@@ -549,7 +549,12 @@ tcExpr (HsIf (Just fun) pred b1 b2) res_ty
     herald = text "Rebindable" <+> quotes (text "if") <+> text "takes"
 
 tcExpr (HsMultiIf _ alts) res_ty
-  = do { alts' <- mapM (wrapLocM $ tcGRHS match_ctxt res_ty) alts
+  = do { res_ty <- if isSingleton alts
+                   then return res_ty
+                   else mkCheckExpType <$> expTypeToType res_ty
+        -- Just like Note [Case branches must never infer a non-tau type]
+        -- in TcMatches
+       ; alts' <- mapM (wrapLocM $ tcGRHS match_ctxt res_ty) alts
        ; res_ty <- readExpType res_ty
        ; return (HsMultiIf res_ty alts') }
   where match_ctxt = MC { mc_what = IfAlt, mc_body = tcBody }
@@ -2259,11 +2264,16 @@ addFunResCtxt has_args fun fun_res_ty env_ty
       -- doesn't suppress some more useful context
   where
     mk_msg
-      = do { env_ty <- readExpType env_ty
+      = do { mb_env_ty <- readExpType_maybe env_ty
                      -- by the time the message is rendered, the ExpType
-                     -- will be filled in
+                     -- will be filled in (except if we're debugging)
            ; fun_res' <- zonkTcType fun_res_ty
-           ; env'     <- zonkTcType env_ty
+           ; env'     <- case mb_env_ty of
+                           Just env_ty -> zonkTcType env_ty
+                           Nothing     ->
+                             do { dumping <- doptM Opt_D_dump_tc_trace
+                                ; MASSERT( dumping )
+                                ; newFlexiTyVarTy liftedTypeKind }
            ; let (_, _, fun_tau) = tcSplitSigmaTy fun_res'
                  (_, _, env_tau) = tcSplitSigmaTy env'
                  (args_fun, res_fun) = tcSplitFunTys fun_tau

@@ -61,6 +61,7 @@ import Outputable
 import FastString
 
 import Control.Monad
+import Control.Arrow ( second )
 
 {-
 ************************************************************************
@@ -605,6 +606,12 @@ addSubTypeCtxt ty_actual ty_expected thing_inside
   where
     mk_msg tidy_env
       = do { (tidy_env, ty_actual)   <- zonkTidyTcType tidy_env ty_actual
+                   -- might not be filled if we're debugging. ugh.
+           ; mb_ty_expected          <- readExpType_maybe ty_expected
+           ; (tidy_env, ty_expected) <- case mb_ty_expected of
+                                          Just ty -> second mkCheckExpType <$>
+                                                     zonkTidyTcType tidy_env ty
+                                          Nothing -> return (tidy_env, ty_expected)
            ; ty_expected             <- readExpType ty_expected
            ; (tidy_env, ty_expected) <- zonkTidyTcType tidy_env ty_expected
            ; let msg = vcat [ hang (ptext (sLit "When checking that:"))
@@ -1030,10 +1037,15 @@ uType is the heart of the unifier.
 -}
 
 uExpType :: CtOrigin -> TcType -> ExpType -> TcM CoercionN
-uExpType orig ty1 et@(Infer _ ki _)
-  = do { ki_co <- uType kind_orig KindLevel (typeKind ty1) ki
-       ; writeExpType et (ty1 `mkCastTy` ki_co)
-       ; return (mkTcNomReflCo ty1 `mkTcCoherenceRightCo` ki_co) }
+uExpType orig ty1 et@(Infer _ tc_lvl ki _)
+  = do { cur_lvl <- getTcLevel
+       ; if cur_lvl `sameDepthAs` tc_lvl
+         then do { ki_co <- uType kind_orig KindLevel (typeKind ty1) ki
+                 ; writeExpType et (ty1 `mkCastTy` ki_co)
+                 ; return (mkTcNomReflCo ty1 `mkTcCoherenceRightCo` ki_co) }
+         else do { traceTc "Preventing writing to untouchable ExpType" empty
+                 ; tau <- expTypeToType et -- See Note [TcLevel of ExpType]
+                 ; uType orig TypeLevel ty1 tau }}
   where
     kind_orig = KindEqOrigin ty1 Nothing orig (Just TypeLevel)
 uExpType orig ty1 (Check ty2)

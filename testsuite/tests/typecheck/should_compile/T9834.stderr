@@ -34,7 +34,10 @@ T9834.hs:23:10: warning:
           Applicative q =>
           Comp p q a1 -> Comp p q a1
         at T9834.hs:23:10
-      Expected type: Comp p q a1 -> Comp p q a1
+      Expected type: (forall (q :: * -> *).
+                      Applicative q =>
+                      Comp p q a -> Comp p q a)
+                     -> p a
         Actual type: Comp p q a -> Comp p q a
     • In the expression: wrapIdComp
       In an equation for ‘afix’: afix = wrapIdComp

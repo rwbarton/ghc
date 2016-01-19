@@ -30,8 +30,8 @@ module TcMType (
   --------------------------------
   -- Expected types
   ExpType(..), ExpSigmaType, ExpRhoType,
-  mkCheckExpType, newOpenInferExpType, readExpType, writeExpType,
-  expTypeToType, checkingExpType_maybe, checkingExpType,
+  mkCheckExpType, newOpenInferExpType, readExpType, readExpType_maybe,
+  writeExpType, expTypeToType, checkingExpType_maybe, checkingExpType,
 
   --------------------------------
   -- Creating fresh type variables for pm checking
@@ -303,6 +303,25 @@ statically.
 
 See also [wiki:Typechecking]
 
+Note [TcLevel of ExpType]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Consider
+
+  data G a where
+    MkG :: G Bool
+
+  foo MkG = True
+
+This is a classic untouchable-variable / ambiguous GADT return type
+scenario. But, with ExpTypes, we'll be inferring the type of the RHS.
+And, because there is only one branch of the case, we won't trigger
+Note [Case branches must never infer a non-tau type] of TcMatches.
+We thus must track a TcLevel in an Inferring ExpType. If we try to
+fill the ExpType and find that the TcLevels don't work out, we
+fill the ExpType with a tau-tv at the low TcLevel, hopefully to
+be worked out later by some means. This is triggered in
+test gadt/gadt-escape1.
+
 -}
 
 -- actual data definition is in TcType
@@ -312,27 +331,35 @@ newOpenInferExpType :: TcM ExpType
 newOpenInferExpType
   = do { lev <- newFlexiTyVarTy levityTy
        ; u <- newUnique
+       ; tclvl <- getTcLevel
        ; let ki = tYPE lev
        ; traceTc "newOpenInferExpType" (ppr u <+> dcolon <+> ppr ki)
        ; ref <- newMutVar Nothing
-       ; return (Infer u ki ref) }
+       ; return (Infer u tclvl ki ref) }
 
--- | Extract a type out of an ExpType. Panics if no type is in there.
+-- | Extract a type out of an ExpType, if one exists. But one should always
+-- exist. Unless you're quite sure you know what you're doing.
+readExpType_maybe :: ExpType -> TcM (Maybe TcType)
+readExpType_maybe (Check ty)        = return (Just ty)
+readExpType_maybe (Infer _ _ _ ref) = readMutVar ref
+
+-- | Extract a type out of an ExpType. Otherwise, panics.
 readExpType :: ExpType -> TcM TcType
-readExpType (Check ty) = return ty
-readExpType (Infer u _ ref)
-  = do { cts <- readMutVar ref
-       ; case cts of
-           Nothing -> pprPanic "Unknown expected type" (ppr u)
-           Just ty -> return ty }
+readExpType exp_ty
+  = do { mb_ty <- readExpType_maybe exp_ty
+       ; case mb_ty of
+           Just ty -> return ty
+           Nothing -> pprPanic "Unknown expected type" (ppr exp_ty) }
 
 -- | Write into an 'ExpType'. It must be an 'Infer'.
 writeExpType :: ExpType -> TcType -> TcM ()
-writeExpType (Infer u ki ref) ty
+writeExpType (Infer u tc_lvl ki ref) ty
   | debugIsOn
   = do { ki1 <- zonkTcType (typeKind ty)
        ; ki2 <- zonkTcType ki
        ; MASSERT2( ki1 `eqType` ki2, ppr ki1 $$ ppr ki2 $$ ppr u )
+       ; lvl_now <- getTcLevel
+       ; MASSERT2( tc_lvl == lvl_now, ppr u $$ ppr tc_lvl $$ ppr lvl_now )
        ; cts <- readTcRef ref
        ; case cts of
            Just already_there -> pprPanic "writeExpType"
@@ -363,8 +390,18 @@ checkingExpType et         = pprPanic "checkingExpType" (ppr et)
 -- TauTv if there isn't.
 expTypeToType :: ExpType -> TcM TcType
 expTypeToType (Check ty) = return ty
-expTypeToType (Infer u ki ref)
-  = do { tau <- newFlexiTyVarTy ki
+expTypeToType (Infer u tc_lvl ki ref)
+  = do { uniq <- newUnique
+       ; tv_ref <- newMutVar Flexi
+       ; let details = MetaTv { mtv_info = TauTv
+                              , mtv_ref  = tv_ref
+                              , mtv_tclvl = tc_lvl }
+             name   = mkMetaTyVarName uniq (fsLit "t")
+             tau_tv = mkTcTyVar name ki details
+             tau    = mkTyVarTy tau_tv
+             -- can't use newFlexiTyVarTy because we need to set the tc_lvl
+             -- See also Note [TcLevel of ExpType]
+
        ; writeMutVar ref (Just tau)
        ; traceTc "Forcing ExpType to be monomorphic:"
                  (ppr u <+> dcolon <+> ppr ki <+> text ":=" <+> ppr tau)
@@ -1243,8 +1280,11 @@ zonkTidyOrigin env orig@(TypeEqOrigin { uo_actual   = act
                                       , uo_expected = exp
                                       , uo_thing    = m_thing })
   = do { (env1, act') <- zonkTidyTcType env  act
-       ; exp <- readExpType exp  -- by now, it's filled in
-       ; (env2, exp') <- second mkCheckExpType <$> zonkTidyTcType env1 exp
+       ; mb_exp <- readExpType_maybe exp  -- it really should be filled in.
+                                          -- unless we're debugging.
+       ; (env2, exp') <- case mb_exp of
+           Just ty -> second mkCheckExpType <$> zonkTidyTcType env1 ty
+           Nothing -> return (env1, exp)
        ; (env3, m_thing') <- zonkTidyErrorThing env2 m_thing
        ; return ( env3, orig { uo_actual   = act'
                              , uo_expected = exp'

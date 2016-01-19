@@ -282,6 +282,7 @@ type TcDTyCoVarSet  = DTyCoVarSet
 -- See Note [ExpType] in TcMType, where you'll also find manipulators.
 data ExpType = Check TcType
              | Infer Unique  -- ^ for debugging only
+                     TcLevel -- See Note [TcLevel of ExpType] in TcMType
                      Kind
                      (IORef (Maybe TcType))
 
@@ -290,8 +291,9 @@ type ExpRhoType   = ExpType
 
 instance Outputable ExpType where
   ppr (Check ty) = ppr ty
-  ppr (Infer u ki _)
-    = parens (text "Infer" <> braces (ppr u) <+> dcolon <+> ppr ki)
+  ppr (Infer u lvl ki _)
+    = parens (text "Infer" <> braces (ppr u <> comma <> ppr lvl)
+              <+> dcolon <+> ppr ki)
 
 -- | Make an 'ExpType' suitable for checking.
 mkCheckExpType :: TcType -> ExpType
