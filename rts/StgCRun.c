@@ -293,11 +293,13 @@ StgRunIsImplementedInAssembler(void)
 #else
         "movq %%rdi,%%rax\n\t"
 #endif
+        "xchg %%rbp,%%rsp\n\t"
         "jmp *%%rax\n\t"
 
         ".globl " STG_RETURN "\n"
          STG_RETURN ":\n\t"
 
+        "xchg %%rbp,%%rsp\n\t"
         "movq %%rbx, %%rax\n\t"   /* Return value in R1  */
 
         /*

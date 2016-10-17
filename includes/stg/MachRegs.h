@@ -161,7 +161,7 @@
 #define REG(x) __asm__("%" #x)
 
 #define REG_Base  r13
-#define REG_Sp    rbp
+#define REG_Sp    rsp
 #define REG_Hp    r12
 #define REG_R1    rbx
 #define REG_R2    r14
@@ -170,7 +170,7 @@
 #define REG_R5    r8
 #define REG_R6    r9
 #define REG_SpLim r15
-#define REG_MachSp  rsp
+#define REG_MachSp  rbp
 
 /*
 Map both Fn and Dn to register xmmn so that we can pass a function any

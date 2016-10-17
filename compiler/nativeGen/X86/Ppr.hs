@@ -670,6 +670,10 @@ pprInstr        (CALL (Left imm) _)    = text "\tcall " <> pprImm imm
 pprInstr (CALL (Right reg) _)   = sdocWithPlatform $ \platform ->
                                   text "\tcall *"
                                       <> pprReg (archWordFormat (target32Bit platform)) reg
+pprInstr        (CALLx (Left imm) _)    = withSwaps $ text "\tcall " <> pprImm imm
+pprInstr (CALLx (Right reg) _)   = withSwaps $ sdocWithPlatform $ \platform ->
+                                  text "\tcall *"
+                                      <> pprReg (archWordFormat (target32Bit platform)) reg
 
 pprInstr (IDIV fmt op)   = pprFormatOp (sLit "idiv") fmt op
 pprInstr (DIV fmt op)    = pprFormatOp (sLit "div")  fmt op
@@ -982,6 +986,9 @@ pprTrigOp op -- fsin, fcos or fptan
       hcat [gtab, text "popl %eax;"] $$
       -- And finally make the result the right size
       hcat [gtab, gcoerceto fmt, gpop dst 1]
+
+withSwaps :: SDoc -> SDoc
+withSwaps d = vcat [text "\txchg %rsp,%rbp", d, text "\txchg %rsp,%rbp"]
 
 --------------------------
 

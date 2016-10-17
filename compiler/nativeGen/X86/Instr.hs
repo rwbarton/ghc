@@ -317,6 +317,7 @@ data Instr
                       Section   -- Data section jump table should be put in
                       CLabel    -- Label of jump table
         | CALL        (Either Imm Reg) [Reg]
+        | CALLx       (Either Imm Reg) [Reg]
 
         -- Other things.
         | CLTD Format            -- sign extend %eax into %edx:%eax
@@ -403,6 +404,8 @@ x86_regUsageOfInstr platform instr
     JMP_TBL op _ _ _    -> mkRUR (use_R op [])
     CALL (Left _)  params   -> mkRU params (callClobberedRegs platform)
     CALL (Right reg) params -> mkRU (reg:params) (callClobberedRegs platform)
+    CALLx (Left _)  params   -> mkRU params (callClobberedRegs platform)
+    CALLx (Right reg) params -> mkRU (reg:params) (callClobberedRegs platform)
     CLTD   _            -> mkRU [eax] [edx]
     NOP                 -> mkRU [] []
 
@@ -613,6 +616,8 @@ x86_patchRegsOfInstr instr env
 
     CALL (Left _)  _    -> instr
     CALL (Right reg) p  -> CALL (Right (env reg)) p
+    CALLx (Left _)  _    -> instr
+    CALLx (Right reg) p  -> CALLx (Right (env reg)) p
 
     FETCHGOT reg        -> FETCHGOT (env reg)
     FETCHPC  reg        -> FETCHPC  (env reg)
@@ -672,6 +677,7 @@ x86_isJumpishInstr instr
         JXX_GBL{}       -> True
         JMP_TBL{}       -> True
         CALL{}          -> True
+        CALLx{}          -> True
         _               -> False
 
 
@@ -870,6 +876,7 @@ insertBeforeNonlocalTransfers insert insns
      = foldr p [] insns
      where p insn r = case insn of
                         CALL _ _    -> insert : insn : r
+                        CALLx _ _    -> insert : insn : r
                         JMP _ _     -> insert : insn : r
                         JXX_GBL _ _ -> panic "insertBeforeNonlocalTransfers: cannot handle JXX_GBL"
                         _           -> insn : r

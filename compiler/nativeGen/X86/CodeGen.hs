@@ -2347,7 +2347,7 @@ genCCall64' dflags target dest_regs args = do
                 delta <- getDeltaNat
                 setDeltaNat (delta - wORD_SIZE dflags)
                 return (tot_arg_size + wORD_SIZE dflags, toOL [
-                                SUB II64 (OpImm (ImmInt (wORD_SIZE dflags))) (OpReg rsp),
+                                SUB II64 (OpImm (ImmInt (wORD_SIZE dflags))) (OpReg rbp),
                                 DELTA (delta - wORD_SIZE dflags) ])
 
     -- push the stack args, right to left
@@ -2364,11 +2364,11 @@ genCCall64' dflags target dest_regs args = do
       case target of
         ForeignTarget (CmmLit (CmmLabel lbl)) conv
            -> -- ToDo: stdcall arg sizes
-              return (unitOL (CALL (Left fn_imm) arg_regs), conv)
+              return (unitOL (CALLx (Left fn_imm) arg_regs), conv)
            where fn_imm = ImmCLbl lbl
         ForeignTarget expr conv
            -> do (dyn_r, dyn_c) <- getSomeReg expr
-                 return (dyn_c `snocOL` CALL (Right dyn_r) arg_regs, conv)
+                 return (dyn_c `snocOL` CALLx (Right dyn_r) arg_regs, conv)
         PrimTarget _
             -> panic $ "genCCall: Can't handle PrimTarget call type here, error "
                         ++ "probably because too many return values."
@@ -2390,7 +2390,7 @@ genCCall64' dflags target dest_regs args = do
                     -- stdcall has callee do it, but is not supported on
                     -- x86_64 target (see #3336)
                   (if real_size==0 then [] else
-                   [ADD (intFormat (wordWidth dflags)) (OpImm (ImmInt real_size)) (OpReg esp)])
+                   [ADD (intFormat (wordWidth dflags)) (OpImm (ImmInt real_size)) (OpReg rbp)])
                   ++
                   [DELTA (delta + real_size)]
                )
@@ -2524,19 +2524,20 @@ genCCall64' dflags target dest_regs args = do
              delta <- getDeltaNat
              setDeltaNat (delta-arg_size)
              let code' = code `appOL` arg_code `appOL` toOL [
-                            SUB (intFormat (wordWidth dflags)) (OpImm (ImmInt arg_size)) (OpReg rsp),
+                            SUB (intFormat (wordWidth dflags)) (OpImm (ImmInt arg_size)) (OpReg rbp),
                             DELTA (delta-arg_size),
                             MOV (floatFormat width) (OpReg arg_reg) (OpAddr (spRel dflags 0))]
              push_args rest code'
 
            | otherwise = do
              ASSERT(width == W64) return ()
-             (arg_op, arg_code) <- getOperand arg
+             (arg_reg, arg_code) <- getSomeReg arg
              delta <- getDeltaNat
              setDeltaNat (delta-arg_size)
              let code' = code `appOL` arg_code `appOL` toOL [
-                                    PUSH II64 arg_op,
-                                    DELTA (delta-arg_size)]
+                            SUB (intFormat (wordWidth dflags)) (OpImm (ImmInt arg_size)) (OpReg rbp),
+                            DELTA (delta-arg_size),
+                            MOV (intFormat width) (OpReg arg_reg) (OpAddr (spRel dflags 0))]
              push_args rest code'
             where
               arg_rep = cmmExprType dflags arg
@@ -2546,7 +2547,7 @@ genCCall64' dflags target dest_regs args = do
              delta <- getDeltaNat
              setDeltaNat (delta - n * arg_size)
              return $ toOL [
-                         SUB II64 (OpImm (ImmInt (n * wORD_SIZE dflags))) (OpReg rsp),
+                         SUB II64 (OpImm (ImmInt (n * wORD_SIZE dflags))) (OpReg rbp),
                          DELTA (delta - n * arg_size)]
 
 maybePromoteCArg :: DynFlags -> Width -> CmmExpr -> CmmExpr

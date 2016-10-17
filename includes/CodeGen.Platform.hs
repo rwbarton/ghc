@@ -835,7 +835,7 @@ freeReg esi = False -- Note [esi/edi not allocatable]
 freeReg edi = False
 # endif
 # if MACHREGS_x86_64
-freeReg rsp = False  --        %rsp is the C stack pointer
+freeReg rbp = False  --        %rsp is the C stack pointer
 # endif
 
 {-
