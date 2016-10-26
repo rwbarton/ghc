@@ -57,6 +57,8 @@
 #include <locale.h>
 #endif
 
+#include <signal.h>
+
 // Count of how many outstanding hs_init()s there have been.
 static int hs_init_count = 0;
 
@@ -116,6 +118,13 @@ hs_init_ghc(int *argc, char **argv[], RtsConfig rts_config)
         // second and subsequent inits are ignored
         return;
     }
+
+    stack_t *my_stack = malloc(sizeof(*my_stack));
+    void *altstack = malloc(SIGSTKSZ);
+    my_stack->ss_sp = altstack;
+    my_stack->ss_flags = 0;
+    my_stack->ss_size = SIGSTKSZ;
+    sigaltstack(my_stack, NULL);
 
     setlocale(LC_CTYPE,"");
 
@@ -515,7 +524,7 @@ exitBySignal(int sig)
 
     // So first of all, we reset the signal to use the default action.
     (void)sigemptyset(&dfl.sa_mask);
-    dfl.sa_flags = 0;
+    dfl.sa_flags = SA_ONSTACK;
     dfl.sa_handler = SIG_DFL;
     (void)sigaction(sig, &dfl, NULL);
 

@@ -378,7 +378,7 @@ stg_sig_install(int sig, int spi, void *mask)
 
     previous_spi = signal_handlers[sig];
 
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
 
     switch(spi) {
     case STG_SIG_IGN:
@@ -620,7 +620,7 @@ set_sigtstp_action (rtsBool handle)
     } else {
         sa.sa_handler = SIG_DFL;
     }
-    sa.sa_flags = 0;
+    sa.sa_flags = SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     if (sigaction(SIGTSTP, &sa, NULL) != 0) {
         sysErrorBelch("warning: failed to install SIGTSTP handler");
@@ -644,9 +644,9 @@ install_vtalrm_handler(int sig, TickProc handle_tick)
     // readline installs its own SIGALRM signal handler (see
     // readline's signals.c), and this somehow causes readline to go
     // wrong when the input exceeds a single line (try it).
-    action.sa_flags = SA_RESTART;
+    action.sa_flags = SA_RESTART | SA_ONSTACK;
 #else
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
 #endif
 
     if (sigaction(sig, &action, NULL) == -1) {
@@ -678,7 +678,7 @@ initDefaultHandlers(void)
     // install the SIGINT handler
     action.sa_handler = shutdown_handler;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
     if (sigaction(SIGINT, &action, &oact) != 0) {
         sysErrorBelch("warning: failed to install SIGINT handler");
     }
@@ -700,7 +700,7 @@ initDefaultHandlers(void)
 #if 0
     action.sa_handler = SIG_IGN;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
     if (sigaction(SIGFPE, &action, &oact) != 0) {
         sysErrorBelch("warning: failed to install SIGFPE handler");
     }
@@ -715,7 +715,7 @@ initDefaultHandlers(void)
     // so that SIGPIPE gets reset to its default behaviour on exec.
     action.sa_handler = empty_handler;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
     if (sigaction(SIGPIPE, &action, &oact) != 0) {
         sysErrorBelch("warning: failed to install SIGPIPE handler");
     }
@@ -723,7 +723,7 @@ initDefaultHandlers(void)
     // Print a backtrace on SIGUSR2
     action.sa_handler = backtrace_handler;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
     if (sigaction(SIGUSR2, &action, &oact) != 0) {
         sysErrorBelch("warning: failed to install SIGUSR2 handler");
     }
@@ -738,7 +738,7 @@ resetDefaultHandlers(void)
 
     action.sa_handler = SIG_DFL;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = SA_ONSTACK;
 
     // restore SIGINT
     if (sigaction(SIGINT, &action, NULL) != 0) {
